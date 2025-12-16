@@ -1,9 +1,5 @@
 const { pool } = require('../config/database');
-const { searchPOI, searchPOIByText, geocode } =     console.log(`执行SQL: ${sql}`);
-    
-    // 使用query而不是execute来避免参数绑定问题
-    const [facilities] = await pool.query(sql);
-    console.log(`查询到 ${facilities.length} 条记录`);ire('../utils/map');
+const { searchPOI, searchPOIByText, geocode } = require('../utils/map');
 
 // 辅助函数：从地址中提取区域代码
 function extractDistrictCode(address) {

@@ -97,6 +97,16 @@ temp/
 *.swo
 *~
 
+# IDE specific files (comprehensive)
+.idea/
+*.iml
+*.iws
+*.ipr
+.project
+.classpath
+.settings/
+.vscode/settings.json
+
 # OS generated files
 .DS_Store
 .DS_Store?
@@ -143,6 +153,13 @@ tests/
 build/
 dist/
 out/
+
+# Frontend specific
+# Vue.js
+frontend/dist/
+frontend/node_modules/
+frontend/.env.local
+frontend/.env.*.local
 
 # Documentation
 docs/build/

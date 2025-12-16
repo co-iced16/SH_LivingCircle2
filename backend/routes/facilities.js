@@ -7,7 +7,7 @@ const { authenticateToken, requireAdmin } = require('../middleware/auth');
 // 公开路由（不需要认证）
 router.get('/categories', facilityController.getFacilityCategories);
 router.get('/search', facilityController.getFacilities);
-// router.get('/map-search', facilityController.searchMapFacilities); // 暂时注释
+router.get('/map-search', facilityController.searchMapFacilities);
 // router.get('/stats', facilityController.getFacilityStats); // 暂时注释
 // router.get('/:id', facilityController.getFacilityById); // 暂时注释
 

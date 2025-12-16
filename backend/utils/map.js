@@ -233,6 +233,13 @@ const searchFacilitiesByCategory = async (longitude, latitude, radius = 1000) =>
  */
 const searchPOIByText = async (keywords, city = '上海', page = 1, limit = 20) => {
   try {
+    // 首先获取所有有效的分类代码
+    const { pool } = require('../config/database');
+    const [validCategories] = await pool.execute('SELECT category_code FROM facility_categories');
+    const validCategoryCodes = new Set(validCategories.map(cat => cat.category_code));
+    
+    console.log(`高德搜索开始 - 关键词: ${keywords}, 城市: ${city}, 有效分类数: ${validCategoryCodes.size}`);
+    
     const response = await amapApi.get('/v3/place/text', {
       params: {
         keywords: keywords,
@@ -245,13 +252,33 @@ const searchPOIByText = async (keywords, city = '上海', page = 1, limit = 20) 
 
     if (response.data.status === '1') {
       const pois = response.data.pois || [];
+      console.log(`高德原始结果: ${pois.length} 个POI`);
+      
+      // 过滤POI：只保留有效分类和上海市的设施
+      const filteredPois = pois.filter(poi => {
+        // 检查分类代码是否有效
+        if (!validCategoryCodes.has(poi.typecode)) {
+          console.log(`过滤掉无效分类 ${poi.typecode}: ${poi.name}`);
+          return false;
+        }
+        
+        // 检查是否为上海市
+        if (poi.cityname !== '上海市' && poi.cityname !== '上海') {
+          console.log(`过滤掉非上海市设施: ${poi.name} (${poi.cityname})`);
+          return false;
+        }
+        
+        return true;
+      });
+      
+      console.log(`过滤后结果: ${filteredPois.length} 个POI`);
       
       return {
         success: true,
-        total: parseInt(response.data.count) || 0,
+        total: filteredPois.length, // 使用过滤后的数量
         page: page,
         limit: limit,
-        facilities: pois.map(poi => {
+        facilities: filteredPois.map(poi => {
           const [lng, lat] = poi.location.split(',').map(Number);
           return {
             id: poi.id,

@@ -191,6 +191,30 @@ const submitFacilityFeedback = async (req, res) => {
         });
       }
 
+      console.log('接收到的设施数据:', {
+        facility_name,
+        category_code,
+        longitude,
+        latitude,
+        formatted_address,
+        district_code
+      });
+
+      // 验证 category_code 是否存在
+      const [categoryCheck] = await pool.execute(
+        'SELECT category_code FROM facility_categories WHERE category_code = ?',
+        [category_code]
+      );
+
+      if (categoryCheck.length === 0) {
+        console.log(`无效的分类代码: ${category_code}`);
+        return res.status(400).json({
+          success: false,
+          message: `无效的设施分类代码: ${category_code}。请从有效分类中选择。`,
+          error_code: 'INVALID_CATEGORY_CODE'
+        });
+      }
+
       // 提取区域代码（如果没有提供）
       const finalDistrictCode = district_code || extractDistrictCode(formatted_address);
 
@@ -251,9 +275,21 @@ const submitFacilityFeedback = async (req, res) => {
 
   } catch (error) {
     console.error('提交设施反馈错误:', error);
+    
+    // 提供更具体的错误信息
+    if (error.code === 'ER_NO_REFERENCED_ROW_2') {
+      return res.status(400).json({
+        success: false,
+        message: '提交失败：使用了无效的设施分类代码',
+        error_code: 'INVALID_CATEGORY_CODE',
+        debug_info: error.message
+      });
+    }
+    
     res.status(500).json({
       success: false,
-      message: '设施反馈提交失败，请稍后重试'
+      message: '设施反馈提交失败，请稍后重试',
+      error_code: 'INTERNAL_ERROR'
     });
   }
 };

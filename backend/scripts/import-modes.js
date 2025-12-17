@@ -30,7 +30,7 @@ const IMPORT_MODES = {
   
   // 最大模式：获取尽可能多的数据
   MAX: {
-    MAX_PAGES: 100, // 单次搜索最多50页
+    MAX_PAGES: 500, // 单次搜索最多50页
     DESCRIPTION: '最大导入，每分类最多2500个设施'
   }
 };

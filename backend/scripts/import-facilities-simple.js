@@ -21,6 +21,7 @@
 const mysql = require('mysql2/promise');
 const axios = require('axios');
 const { IMPORT_MODES } = require('./import-modes');
+const { mapAmapTypeToOurCategory, getValidCategoryCodes } = require('../utils/categoryMapping');
 require('dotenv').config();
 
 // 数据库连接配置
@@ -58,11 +59,14 @@ const logger = {
 class SimpleFacilityImporter {
   constructor() {
     this.connection = null;
+    this.validCategoryCodes = null;
   }
 
   async connect() {
     this.connection = await mysql.createConnection(dbConfig);
+    this.validCategoryCodes = await getValidCategoryCodes();
     logger.info('数据库连接成功');
+    logger.info(`获取到 ${this.validCategoryCodes.size} 个有效分类代码`);
   }
 
   async disconnect() {
@@ -100,12 +104,12 @@ class SimpleFacilityImporter {
   }
 
   /**
-   * 高德POI搜索API - 支持分页获取更多数据
+   * 高德POI搜索API - 支持分页获取更多数据，现在集成分类映射
    * 
    * POI (Point of Interest) = 兴趣点/设施点
-   * 通过关键词搜索获取真实存在的设施数据
+   * 通过关键词搜索获取真实存在的设施数据，并智能映射分类
    * 
-   * 例如：搜索"便利店" → 分页获取上海市所有便利店的名称、地址、坐标
+   * 例如：搜索"便利店" → 分页获取上海市所有便利店的名称、地址、坐标、分类代码
    */
   async searchPOI(keyword, city = '上海', maxPages = 5) {
     const allPois = [];
@@ -121,7 +125,8 @@ class SimpleFacilityImporter {
           city: city,             // 搜索城市
           output: 'json',         // 返回JSON格式
           page: page,             // 页码（从1开始）
-          offset: 50              // 每页最多50个POI点
+          offset: 50,             // 每页最多50个POI点
+          extensions: 'all'       // 获取完整信息，包括typecode
         };
 
         logger.info(`   正在获取第 ${page} 页...`);
@@ -145,42 +150,60 @@ class SimpleFacilityImporter {
           break;
         }
 
-        // 解析POI数据：提取名称、地址、坐标等信息
-        const parsedPois = pois.map(poi => ({
-          name: poi.name,                                           
-          address: poi.address,                                     
-          longitude: parseFloat(poi.location?.split(',')[0] || 0),  
-          latitude: parseFloat(poi.location?.split(',')[1] || 0),   
-          adcode: poi.adcode                                        
-        })).filter(poi => {
-          // 基本过滤：坐标、地址、城市检查
-          const hasCoords = poi.longitude && poi.latitude;
-          const hasAddress = poi.address;
-          
-          // 简单的上海判断：信任API搜索结果
-          const isShanghai = city === '上海';
-          
-          if (!hasCoords) {
-            logger.info(`   ❌ 跳过无坐标: ${poi.name}`);
-            return false;
+        // 解析POI数据：提取名称、地址、坐标等信息，并进行分类映射
+        for (const poi of pois) {
+          try {
+            // 基本数据提取
+            const basicPoi = {
+              name: poi.name,                                           
+              address: poi.address,                                     
+              longitude: parseFloat(poi.location?.split(',')[0] || 0),  
+              latitude: parseFloat(poi.location?.split(',')[1] || 0),   
+              adcode: poi.adcode,
+              original_typecode: poi.typecode || null
+            };
+            
+            // 基本过滤：坐标、地址检查
+            const hasCoords = basicPoi.longitude && basicPoi.latitude;
+            const hasAddress = basicPoi.address;
+            
+            if (!hasCoords) {
+              logger.info(`   ❌ 跳过无坐标: ${basicPoi.name}`);
+              continue;
+            }
+            if (!hasAddress) {
+              logger.info(`   ❌ 跳过无地址: ${basicPoi.name}`);
+              continue;
+            }
+            
+            // 分类映射：如果有typecode，尝试映射到我们的分类系统
+            let mappedCategoryCode = null;
+            if (basicPoi.original_typecode) {
+              mappedCategoryCode = await mapAmapTypeToOurCategory(
+                basicPoi.original_typecode, 
+                this.validCategoryCodes
+              );
+              
+              // 只在第一页记录映射详情，避免日志过多
+              if (page === 1 && mappedCategoryCode && mappedCategoryCode !== basicPoi.original_typecode) {
+                logger.info(`   🎯 分类映射: ${basicPoi.original_typecode} -> ${mappedCategoryCode} (${basicPoi.name})`);
+              }
+            }
+            
+            // 添加映射后的分类代码
+            basicPoi.mapped_category_code = mappedCategoryCode;
+            
+            // 只在第一页显示详细信息，避免日志过多
+            if (page === 1) {  
+              logger.info(`   ✅ 有效POI: ${basicPoi.name} - ${basicPoi.address}`);
+            }
+            
+            allPois.push(basicPoi);
+            
+          } catch (error) {
+            logger.error(`处理POI失败: ${poi.name}`, error);
           }
-          if (!hasAddress) {
-            logger.info(`   ❌ 跳过无地址: ${poi.name}`);
-            return false;
-          }
-          if (!isShanghai) {
-            logger.info(`   ❌ 跳过非上海: ${poi.name} - ${poi.address}`);
-            return false;
-          }
-          
-          // 只在第一页显示详细信息，避免日志过多
-          if (page === 1) {  
-            logger.info(`   ✅ 有效POI: ${poi.name} - ${poi.address}`);
-          }
-          return true;
-        });
-
-        allPois.push(...parsedPois);
+        }
 
         // 如果返回的POI数量少于50，说明已经是最后一页了
         if (pois.length < 50) {
@@ -193,6 +216,12 @@ class SimpleFacilityImporter {
       }
 
       logger.info(`   🎯 总共获取到 ${allPois.length} 个有效POI点`);
+      
+      // 统计分类映射结果
+      const mappedCount = allPois.filter(poi => poi.mapped_category_code).length;
+      const unmappedCount = allPois.length - mappedCount;
+      logger.info(`   📊 分类映射统计: ${mappedCount} 个已映射, ${unmappedCount} 个未映射`);
+      
       return allPois;
 
     } catch (error) {
@@ -244,7 +273,7 @@ class SimpleFacilityImporter {
   }
 
   /**
-   * 导入单个分类的设施
+   * 导入单个分类的设施 - 现在支持智能分类映射
    */
   async importCategory(category, importMode = null) {
     const { category_code, category_name } = category;
@@ -274,38 +303,34 @@ class SimpleFacilityImporter {
 
     logger.info(`📝 去重后剩余 ${uniquePois.length} 个设施`);
 
+    // 分类POI：已映射的和未映射的
+    const mappedPois = uniquePois.filter(poi => poi.mapped_category_code);
+    const unmappedPois = uniquePois.filter(poi => !poi.mapped_category_code);
+    
+    logger.info(`📊 分类策略: ${mappedPois.length} 个智能映射到现有分类, ${unmappedPois.length} 个使用默认分类 ${category_code}`);
+
     // 导入数据库
     let imported = 0;
     let skipped = 0;
+    
+    // 处理所有POI，智能选择分类
     for (const poi of uniquePois) {
       try {
-        const districtCode = this.extractDistrictCode(poi.address);
-        const locationId = await this.insertLocation(
-          poi.address, 
-          poi.longitude, 
-          poi.latitude, 
-          districtCode
-        );
-
-        // 检查设施是否已存在
-        const [existingFacility] = await this.connection.execute(
-          'SELECT facility_id FROM facilities WHERE name = ? AND location_id = ? AND category_code = ?',
-          [poi.name, locationId, category_code]
-        );
-
-        if (existingFacility.length === 0) {
-          // 插入设施
-          await this.connection.execute(
-            'INSERT INTO facilities (name, location_id, category_code) VALUES (?, ?, ?)',
-            [poi.name, locationId, category_code]
-          );
+        // 优先使用智能映射的分类，否则使用默认分类
+        const finalCategoryCode = poi.mapped_category_code || category_code;
+        
+        const result = await this.insertFacility(poi, finalCategoryCode);
+        if (result.success) {
           imported++;
-          logger.info(`   ✅ 新增设施: ${poi.name}`);
+          if (poi.mapped_category_code) {
+            logger.info(`   ✅ 新增设施(智能映射): ${poi.name} -> ${finalCategoryCode}`);
+          } else {
+            logger.info(`   ✅ 新增设施(默认分类): ${poi.name} -> ${finalCategoryCode}`);
+          }
         } else {
           skipped++;
           logger.info(`   ⏭️ 已存在设施: ${poi.name}`);
         }
-
       } catch (error) {
         logger.error(`插入设施失败: ${poi.name}`, error);
         skipped++;
@@ -314,6 +339,36 @@ class SimpleFacilityImporter {
 
     logger.info(`✅ 分类 ${category_code} 导入完成，成功导入 ${imported}/${uniquePois.length} 个设施 (跳过${skipped}个重复)\n`);
     return imported;
+  }
+  
+  /**
+   * 插入单个设施的辅助方法
+   */
+  async insertFacility(poi, categoryCode) {
+    const districtCode = this.extractDistrictCode(poi.address);
+    const locationId = await this.insertLocation(
+      poi.address, 
+      poi.longitude, 
+      poi.latitude, 
+      districtCode
+    );
+
+    // 检查设施是否已存在
+    const [existingFacility] = await this.connection.execute(
+      'SELECT facility_id FROM facilities WHERE name = ? AND location_id = ? AND category_code = ?',
+      [poi.name, locationId, categoryCode]
+    );
+
+    if (existingFacility.length === 0) {
+      // 插入设施，直接使用映射后的分类代码
+      await this.connection.execute(
+        'INSERT INTO facilities (name, location_id, category_code) VALUES (?, ?, ?)',
+        [poi.name, locationId, categoryCode]
+      );
+      return { success: true };
+    } else {
+      return { success: false };
+    }
   }
 
   /**

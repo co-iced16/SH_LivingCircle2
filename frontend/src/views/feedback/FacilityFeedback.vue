@@ -3,6 +3,22 @@
     <div class="page-header">
       <h1>设施评价</h1>
       <p>请选择具体设施并进行评价</p>
+      
+      <!-- 登录状态提示 -->
+      <div v-if="!isAuthenticated" class="login-notice" style="margin-top: 16px;">
+        <el-alert
+          title="提示：需要登录才能提交评价"
+          type="warning"
+          :closable="false"
+          show-icon
+        >
+          <template #default>
+            <span>您当前未登录，请先</span>
+            <el-button type="primary" text @click="$router.push('/login')">点击登录</el-button>
+            <span>后再提交评价。</span>
+          </template>
+        </el-alert>
+      </div>
     </div>
 
     <div class="card-container">
@@ -230,6 +246,7 @@
 <script>
 import { ref, reactive, computed, onMounted } from 'vue'
 import { useStore } from 'vuex'
+import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { LocationInformation } from '@element-plus/icons-vue'
 import { formatDistance } from '@/utils/map'
@@ -241,6 +258,10 @@ export default {
   },
   setup() {
     const store = useStore()
+    const router = useRouter()
+    
+    // 登录状态
+    const isAuthenticated = computed(() => store.state.auth.isAuthenticated)
     
     const currentStep = ref(0)
     const searchType = ref('system')
@@ -392,6 +413,13 @@ export default {
     
     // 提交评价
     const submitFeedback = async () => {
+      // 检查登录状态
+      if (!isAuthenticated.value) {
+        ElMessage.warning('请先登录后再提交评价')
+        router.push('/login')
+        return
+      }
+      
       submitLoading.value = true
       try {
         let feedbackData = {
@@ -408,7 +436,14 @@ export default {
           feedbackData.formatted_address = selectedFacility.value.address
           feedbackData.longitude = selectedFacility.value.longitude
           feedbackData.latitude = selectedFacility.value.latitude
-          feedbackData.category_code = selectedFacility.value.typecode || '060000' // 使用高德的typecode或默认分类
+          // 高德typecode转换为系统分类代码（取前6位或使用默认）
+          let typeCode = selectedFacility.value.typecode || ''
+          if (typeCode.length >= 6) {
+            typeCode = typeCode.substring(0, 6)
+          } else {
+            typeCode = '060000' // 默认购物服务
+          }
+          feedbackData.category_code = typeCode
         }
         
         const result = await store.dispatch('feedback/submitFacilityFeedback', feedbackData)
@@ -465,6 +500,7 @@ export default {
       feedbackFormRef,
       facilityCategories,
       cascaderProps,
+      isAuthenticated,
       searchSystemFacilities,
       searchMapFacilities,
       switchToMapSearch,

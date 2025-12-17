@@ -8,6 +8,7 @@
     <div v-if="loading" class="loading-container">
       <el-icon size="50" class="rotating"><Loading /></el-icon>
       <p>正在加载评估结果...</p>
+      <p class="loading-detail">{{ loadingMessage }}</p>
     </div>
 
     <div v-else-if="resultData" class="result-content">
@@ -15,34 +16,28 @@
       <div class="result-card">
         <div class="score-section">
           <div class="score-display">
-            <div class="score-number" :style="{ color: getScoreColor(resultData.total_score) }">
-              {{ Math.round(resultData.total_score) }}
+            <div class="score-number" :style="{ color: getScoreColor(resultData?.total_score || 0) }">
+              {{ Math.round(resultData?.total_score || 0) }}
             </div>
             <div class="score-label">便利度总分</div>
           </div>
           <div class="score-description">
-            <h3>{{ getScoreDescription(resultData.total_score) }}</h3>
-            <p>基于 {{ resultData.facility_count }} 个设施的综合评估</p>
+            <h3>{{ getScoreDescription(resultData?.total_score || 0) }}</h3>
+            <p>基于 {{ resultData?.facility_count || 0 }} 个设施的综合评估</p>
           </div>
         </div>
         <div class="score-breakdown">
           <el-row :gutter="16">
-            <el-col :span="8">
+            <el-col :span="12">
               <div class="breakdown-item">
                 <div class="breakdown-label">设施数量</div>
-                <div class="breakdown-value">{{ resultData.facility_score || 0 }}分</div>
+                <div class="breakdown-value">{{ resultData?.facility_score || 0 }}分</div>
               </div>
             </el-col>
-            <el-col :span="8">
+            <el-col :span="12">
               <div class="breakdown-item">
                 <div class="breakdown-label">交通便利</div>
-                <div class="breakdown-value">{{ resultData.transport_score || 0 }}分</div>
-              </div>
-            </el-col>
-            <el-col :span="8">
-              <div class="breakdown-item">
-                <div class="breakdown-label">用户评价</div>
-                <div class="breakdown-value">{{ resultData.feedback_score || 0 }}分</div>
+                <div class="breakdown-value">{{ resultData?.transport_score || 0 }}分</div>
               </div>
             </el-col>
           </el-row>
@@ -75,8 +70,11 @@
                     <span class="facility-count">{{ category.count }}个</span>
                   </div>
                   <div class="category-score">
-                    <el-rate :model-value="category.avg_score || 0" disabled />
-                    <span class="score-text">{{ category.avg_score || 0 }}分</span>
+                    <el-progress 
+                      :percentage="category.avg_score || 0" 
+                      :stroke-width="10"
+                      :color="getScoreColor(category.avg_score || 0)"
+                    />
                   </div>
                 </div>
               </div>
@@ -304,6 +302,7 @@ export default {
     const store = useStore()
     
     const loading = ref(true)
+    const loadingMessage = ref('正在准备评估任务...')
     const resultData = ref(null)
     const taskInfo = ref(null)
     const activeTransportMode = ref('walking')
@@ -314,18 +313,31 @@ export default {
       keyword: ''
     })
     
-    const transportModes = [
-      { value: 'walking', label: '步行' },
-      { value: 'transit', label: '公交' },
-      { value: 'driving', label: '驾车' },
-      { value: 'cycling', label: '骑行' }
+    // 所有交通方式定义
+    const allTransportModes = [
+      { value: 'walking', label: '步行', backendValue: 'walk' },
+      { value: 'transit', label: '公交', backendValue: 'bus' },
+      { value: 'driving', label: '驾车', backendValue: 'car' },
+      { value: 'cycling', label: '骑行', backendValue: 'ride' }
     ]
+    
+    // 根据任务实际选择的交通方式过滤
+    const transportModes = computed(() => {
+      if (!taskInfo.value?.transport_modes) return allTransportModes
+      
+      const selectedModes = taskInfo.value.transport_modes
+      return allTransportModes.filter(mode => 
+        selectedModes.includes(mode.backendValue) || selectedModes.includes(mode.value)
+      )
+    })
     
     // 计算属性
     const categoryStats = computed(() => {
       if (!resultData.value?.facilities) return []
       
       const stats = {}
+      const radius = taskInfo.value?.radius || 1000
+      
       resultData.value.facilities.forEach(facility => {
         const code = facility.category_code
         if (!stats[code]) {
@@ -333,21 +345,33 @@ export default {
             category_code: code,
             category_name: facility.category_name,
             count: 0,
-            total_score: 0,
-            score_count: 0
+            total_distance: 0,
+            min_time: Infinity
           }
         }
         stats[code].count++
-        if (facility.average_score) {
-          stats[code].total_score += facility.average_score
-          stats[code].score_count++
+        stats[code].total_distance += facility.distance || 0
+        // 获取该设施的最短交通时间
+        const times = facility.transport_times?.map(t => t.time) || []
+        if (times.length > 0) {
+          stats[code].min_time = Math.min(stats[code].min_time, ...times)
         }
       })
       
-      return Object.values(stats).map(stat => ({
-        ...stat,
-        avg_score: stat.score_count > 0 ? (stat.total_score / stat.score_count).toFixed(1) : 0
-      }))
+      return Object.values(stats).map(stat => {
+        // 计算该类别的便利度得分
+        // 设施密度得分(40%) + 可达性得分(35%) + 默认反馈得分(25%)
+        const densityScore = Math.min((stat.count / 10) * 100, 100)
+        const avgDist = stat.count > 0 ? stat.total_distance / stat.count : radius
+        const accessScore = Math.max(100 - (avgDist / radius) * 50, 50)
+        const feedbackScore = 90 // 默认分
+        const categoryScore = densityScore * 0.4 + accessScore * 0.35 + feedbackScore * 0.25
+        
+        return {
+          ...stat,
+          avg_score: Math.round(categoryScore)
+        }
+      })
     })
     
     const filteredFacilities = computed(() => {
@@ -464,75 +488,180 @@ export default {
       }
       
       loading.value = true
-      try {
-        const response = await store.dispatch('evaluation/getEvaluationResult', taskId)
-        console.log('API响应:', response) // 调试日志
-        
-        // 检查响应结构 - 处理两种可能的格式
-        let result;
-        if (response && response.success && response.data) {
-          // 标准格式: {success: true, data: {...}}
-          result = response.data
-        } else if (response && response.task_info) {
-          // 直接数据格式: {task_info: {...}, ...}
-          result = response
-        } else {
-          // 无效响应
-          const errorMessage = response?.message || '获取评估结果失败：无有效数据'
-          console.error('评估结果获取失败:', response)
-          throw new Error(errorMessage)
-        }
-          
-        // 使用后端真实数据
-        // 首先按设施分组，将不同交通方式的数据合并
-        const facilityMap = new Map()
-        
-        result.facility_details.forEach(detail => {
-          const key = detail.facility_id
-          if (!facilityMap.has(key)) {
-            facilityMap.set(key, {
-              facility_id: detail.facility_id,
-              name: detail.facility_name,
-              category_code: detail.category_code,
-              category_name: detail.category_name,
-              address: detail.facility_address,
-              distance: detail.distance,
-              longitude: detail.facility_lng,
-              latitude: detail.facility_lat,
-              transport_times: []
-            })
+      loadingMessage.value = '正在启动评估计算...'
+      
+      // 轮询检查任务是否完成
+      const maxRetries = 30 // 最多等待30次，每次2秒，总共1分钟
+      let retryCount = 0
+      
+      while (retryCount < maxRetries) {
+        try {
+          // 更新加载消息
+          if (retryCount === 0) {
+            loadingMessage.value = '正在计算便利度评分...'
+          } else if (retryCount < 5) {
+            loadingMessage.value = '正在分析周边设施...'
+          } else if (retryCount < 10) {
+            loadingMessage.value = '正在规划出行路线...'
+          } else if (retryCount < 15) {
+            loadingMessage.value = '正在汇总评估数据...'
+          } else {
+            loadingMessage.value = `正在完成最后计算... (${retryCount}/${maxRetries})`
           }
           
-          // 添加交通方式时间数据
-          facilityMap.get(key).transport_times.push({
-            mode: detail.transport_mode,
-            time: detail.travel_time * 60 // 转换为秒
+          const response = await store.dispatch('evaluation/getEvaluationResult', taskId)
+          console.log('API响应:', response) // 调试日志
+          
+          // 检查响应结构 - 处理两种可能的格式
+          let result;
+          if (response && response.success && response.data) {
+            // 标准格式: {success: true, data: {...}}
+            result = response.data
+          } else if (response && response.task_info) {
+            // 直接数据格式: {task_info: {...}, ...}
+            result = response
+          } else {
+            // 无效响应
+            const errorMessage = response?.message || '获取评估结果失败：无有效数据'
+            console.error('评估结果获取失败:', response)
+            throw new Error(errorMessage)
+          }
+
+          // 检查任务是否已经完成计算
+          const totalScore = parseFloat(result.task_info?.total_score || 0)
+          const facilityCount = result.summary?.total_facilities || 0
+          
+          console.log(`🔍 检查任务完成状态: 总分=${totalScore}, 设施数=${facilityCount}`)
+          
+          // 如果分数为0且没有设施详情，说明还在计算中
+          if (totalScore === 0 && facilityCount === 0 && retryCount < maxRetries - 1) {
+            retryCount++
+            console.log(`⏳ 任务还在计算中，等待2秒后重试 (${retryCount}/${maxRetries})`)
+            await new Promise(resolve => setTimeout(resolve, 2000))
+            continue
+          }
+          
+          // 任务已完成，处理数据并显示结果
+          console.log('✅ 任务计算完成，开始处理数据')
+          
+          // 确保facility_details存在且为数组
+          if (!result.facility_details || !Array.isArray(result.facility_details)) {
+            console.error('❌ facility_details数据不存在或不是数组:', result.facility_details)
+            throw new Error('设施详情数据格式错误')
+          }
+          
+          console.log('📊 处理设施详情数据，数量:', result.facility_details.length)
+          
+          // 使用后端真实数据
+          // 首先按设施分组，将不同交通方式的数据合并
+          const facilityMap = new Map()
+          
+          result.facility_details.forEach(detail => {
+            const key = detail.facility_id
+            if (!facilityMap.has(key)) {
+              facilityMap.set(key, {
+                facility_id: detail.facility_id,
+                name: detail.facility_name,
+                category_code: detail.category_code,
+                category_name: detail.category_name,
+                address: detail.facility_address,
+                distance: detail.distance,
+                longitude: detail.facility_lng,
+                latitude: detail.facility_lat,
+                transport_times: []
+              })
+            }
+            
+            // 添加交通方式时间数据（后端存储的是分钟）
+            facilityMap.get(key).transport_times.push({
+              mode: detail.transport_mode,
+              time: (detail.travel_time || 0) * 60 // 转换为秒
+            })
           })
-        })
-        
-        resultData.value = {
-          total_score: result.task_info.total_score,
-          facility_score: Math.round(result.task_info.total_score * 0.8), // 估算分项得分
-          transport_score: Math.round(result.task_info.total_score * 1.1),
-          feedback_score: Math.round(result.task_info.total_score * 0.9),
-          facility_count: result.summary.total_facilities,
-          facilities: Array.from(facilityMap.values())
+          
+          // 计算分项得分
+          const totalFacilities = result.summary?.total_facilities || facilityMap.size || 0
+          
+          // 从后端获取的类别统计（包含没有设施的类别）
+          const categoryStats = result.category_stats || []
+          const totalCategories = result.target_categories?.length || categoryStats.length || 1
+          
+          // 按类别统计设施数量
+          const categoryFacilityCounts = {}
+          facilityMap.forEach(f => {
+            categoryFacilityCounts[f.category_code] = (categoryFacilityCounts[f.category_code] || 0) + 1
+          })
+          
+          // 设施密度得分：每个选择的类别单独计算（10个满分），然后平均
+          // 使用目标类别数量，没有设施的类别计0分
+          let totalDensityScore = 0
+          if (result.target_categories && result.target_categories.length > 0) {
+            result.target_categories.forEach(cat => {
+              const code = cat.category_code
+              const count = categoryFacilityCounts[code] || 0
+              totalDensityScore += Math.min((count / 10) * 100, 100)
+            })
+          } else {
+            Object.values(categoryFacilityCounts).forEach(count => {
+              totalDensityScore += Math.min((count / 10) * 100, 100)
+            })
+          }
+          const facility_score = totalCategories > 0 ? totalDensityScore / totalCategories : 0
+          
+          // 交通便利得分：基于平均距离和时间
+          const avgDistance = result.summary?.avg_distance || 0
+          const radius = result.task_info?.radius || 1000
+          const transport_score = Math.max(100 - (avgDistance / radius) * 50, 50)
+          
+          resultData.value = {
+            total_score: result.task_info?.total_score || 0,
+            facility_score: Math.round(facility_score),
+            transport_score: Math.round(transport_score),
+            facility_count: totalFacilities,
+            facilities: Array.from(facilityMap.values())
+          }
+
+          // 添加调试日志
+          console.log('🔍 前端数据处理结果:')
+          console.log('  - API响应 result.task_info.total_score:', result.task_info?.total_score)
+          console.log('  - API响应 result.summary.total_facilities:', result.summary?.total_facilities)
+          console.log('  - 设置的 resultData.total_score:', resultData.value.total_score)
+          console.log('  - 设置的 resultData.facility_count:', resultData.value.facility_count)
+          console.log('  - facilityMap大小:', facilityMap.size)
+          console.log('  - 完整 resultData:', resultData.value)
+          
+          taskInfo.value = {
+            task_id: result.task_info.task_id,
+            center_address: result.task_info.center_address,
+            radius: result.task_info.radius,
+            created_at: new Date(result.task_info.created_at).toLocaleString(),
+            transport_modes: result.transport_modes || []
+          }
+          
+          console.log('评估结果加载成功:', resultData.value)
+          loading.value = false
+          return // 成功完成，退出函数
+          
+        } catch (error) {
+          console.error('加载评估结果失败:', error)
+          
+          // 如果是最后一次尝试，显示错误
+          if (retryCount >= maxRetries - 1) {
+            ElMessage.error('评估计算超时或失败: ' + error.message)
+            loading.value = false
+            return
+          }
+          
+          // 否则继续重试
+          retryCount++
+          console.log(`❌ 获取失败，等待2秒后重试 (${retryCount}/${maxRetries})`)
+          await new Promise(resolve => setTimeout(resolve, 2000))
         }
-        
-        taskInfo.value = {
-          task_id: result.task_info.task_id,
-          center_address: result.task_info.center_address,
-          radius: result.task_info.radius,
-          created_at: new Date(result.task_info.created_at).toLocaleString()
-        }
-        
-        console.log('评估结果加载成功:', resultData.value)
-      } catch (error) {
-        console.error('加载评估结果失败:', error)
-        ElMessage.error('加载评估结果失败: ' + error.message)
-      } finally {
-        loading.value = false
       }
+      
+      // 如果所有重试都失败了
+      ElMessage.error('评估任务计算超时，请稍后重试')
+      loading.value = false
     }
     
     const generateMockFacilities = () => {
@@ -573,9 +702,9 @@ export default {
       // 映射前端模式到后端模式
       const modeMap = {
         'walking': 'walk',
-        'bus': 'bus',
-        'car': 'car',
-        'ride': 'ride'
+        'transit': 'bus',
+        'driving': 'car',
+        'cycling': 'ride'
       }
       
       const backendMode = modeMap[mode] || mode
@@ -599,9 +728,9 @@ export default {
       // 映射前端模式到后端模式
       const modeMap = {
         'walking': 'walk',
-        'bus': 'bus', 
-        'car': 'car',
-        'ride': 'ride'
+        'transit': 'bus', 
+        'driving': 'car',
+        'cycling': 'ride'
       }
       
       const backendMode = modeMap[mode] || mode
@@ -651,7 +780,12 @@ export default {
         walking: '步行',
         transit: '公交',
         driving: '驾车',
-        cycling: '骑行'
+        cycling: '骑行',
+        // 后端模式
+        walk: '步行',
+        bus: '公交',
+        car: '驾车',
+        ride: '骑行'
       }
       return modeMap[mode] || mode
     }
@@ -671,6 +805,7 @@ export default {
     
     return {
       loading,
+      loadingMessage,
       resultData,
       taskInfo,
       activeTransportMode,
@@ -916,6 +1051,13 @@ export default {
 .loading-container p {
   margin-top: 16px;
   color: #909399;
+}
+
+.loading-detail {
+  font-size: 14px;
+  color: #666;
+  font-weight: 500;
+  margin-top: 8px !important;
 }
 
 @media (max-width: 768px) {

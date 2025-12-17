@@ -52,6 +52,12 @@ const routes = [
         meta: { title: '评估结果' }
       },
       {
+        path: '/evaluation/history',
+        name: 'EvaluationHistory',
+        component: () => import('@/views/evaluation/EvaluationHistory.vue'),
+        meta: { title: '评估历史' }
+      },
+      {
         path: '/admin',
         name: 'Admin',
         component: () => import('@/views/admin/AdminLayout.vue'),

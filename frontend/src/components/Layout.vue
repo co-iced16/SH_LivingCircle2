@@ -56,10 +56,20 @@
               </el-menu-item>
             </el-sub-menu>
             
-            <el-menu-item index="/evaluation">
-              <el-icon><DataAnalysis /></el-icon>
-              <span>便利度评估</span>
-            </el-menu-item>
+            <el-sub-menu index="evaluation">
+              <template #title>
+                <el-icon><DataAnalysis /></el-icon>
+                <span>便利度评估</span>
+              </template>
+              <el-menu-item index="/evaluation">
+                <el-icon><Plus /></el-icon>
+                <span>新建评估</span>
+              </el-menu-item>
+              <el-menu-item index="/evaluation/history">
+                <el-icon><Clock /></el-icon>
+                <span>评估历史</span>
+              </el-menu-item>
+            </el-sub-menu>
             
             <el-sub-menu index="admin" v-if="isAdmin">
               <template #title>

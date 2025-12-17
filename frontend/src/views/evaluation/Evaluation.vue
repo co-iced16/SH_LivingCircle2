@@ -3,6 +3,22 @@
     <div class="page-header">
       <h1>社区生活圈便利度评估</h1>
       <p>科学评估社区生活便利度，为您提供详细的分析报告</p>
+      
+      <!-- 登录状态提示 -->
+      <div v-if="!isAuthenticated" class="login-notice" style="margin-top: 16px; max-width: 600px; margin-left: auto; margin-right: auto;">
+        <el-alert
+          title="提示：需要登录才能进行评估"
+          type="warning"
+          :closable="false"
+          show-icon
+        >
+          <template #default>
+            <span>您当前未登录，请先</span>
+            <el-button type="primary" text @click="router.push('/login')">点击登录</el-button>
+            <span>后再进行评估。</span>
+          </template>
+        </el-alert>
+      </div>
     </div>
 
     <div class="card-container">
@@ -411,6 +427,9 @@ export default {
     
     const facilityCategories = computed(() => store.getters['facilities/categoriesTree'])
     
+    // 登录状态
+    const isAuthenticated = computed(() => store.state.auth.isAuthenticated)
+    
     // 获取当前位置
     const getCurrentLocation = async () => {
       locationLoading.value = true
@@ -783,29 +802,120 @@ export default {
       }
     }
     
+    // 等待评估计算完成
+    const waitForEvaluationCompletion = async (taskId) => {
+      const maxRetries = 30 // 最多等待30次，每次2秒，总共1分钟
+      let retryCount = 0
+      
+      console.log(`开始等待评估计算完成，任务ID: ${taskId}`)
+      
+      while (retryCount < maxRetries) {
+        try {
+          retryCount++
+          console.log(`检查评估任务 ${taskId} 是否完成 (第${retryCount}次)`)
+          
+          // 更新进度提示和进度条
+          if (retryCount <= 5) {
+            currentProgress.value = '正在分析周边设施分布...'
+            progressPercentage.value = 40 + retryCount * 2
+          } else if (retryCount <= 10) {
+            currentProgress.value = '正在计算交通可达性...'
+            progressPercentage.value = 50 + (retryCount - 5) * 2
+          } else if (retryCount <= 15) {
+            currentProgress.value = '正在整合居民反馈...'
+            progressPercentage.value = 60 + (retryCount - 10) * 2
+          } else if (retryCount <= 20) {
+            currentProgress.value = '正在生成便利度评分...'
+            progressPercentage.value = 70 + (retryCount - 15) * 2
+          } else if (retryCount <= 25) {
+            currentProgress.value = '正在完成最后计算...'
+            progressPercentage.value = 80 + (retryCount - 20) * 2
+          } else {
+            currentProgress.value = `计算即将完成... (${retryCount}/${maxRetries})`
+            progressPercentage.value = 90 + Math.min((retryCount - 25), 5)
+          }
+          
+          const response = await store.dispatch('evaluation/getEvaluationResult', taskId)
+          console.log(`第${retryCount}次检查结果:`, response)
+          
+          // 检查响应结构
+          let result;
+          if (response && response.success && response.data) {
+            result = response.data
+          } else if (response && response.task_info) {
+            result = response
+          } else {
+            console.log('响应格式异常，继续等待...', response)
+            await new Promise(resolve => setTimeout(resolve, 2000))
+            continue
+          }
+
+          // 检查任务是否已经完成计算
+          const totalScore = parseFloat(result.task_info?.total_score || 0)
+          const facilityCount = result.summary?.total_facilities || 0
+          
+          console.log(`检查完成状态: total_score=${totalScore}, facility_count=${facilityCount}`)
+          
+          if (totalScore > 0 && facilityCount > 0) {
+            console.log(`✅ 评估任务 ${taskId} 计算完成！得分: ${totalScore}, 设施数: ${facilityCount}`)
+            return {
+              success: true,
+              data: result
+            }
+          } else if (totalScore === 0 && facilityCount > 0) {
+            // 可能是得分为0的正常情况
+            console.log(`✅ 评估任务 ${taskId} 计算完成（得分为0）！设施数: ${facilityCount}`)
+            return {
+              success: true,
+              data: result
+            }
+          } else {
+            console.log(`⏳ 评估任务 ${taskId} 仍在计算中 (得分: ${totalScore}, 设施数: ${facilityCount})`)
+            await new Promise(resolve => setTimeout(resolve, 2000))
+          }
+        } catch (error) {
+          console.error(`检查评估任务状态失败 (第${retryCount}次):`, error)
+          
+          if (error.response && error.response.status === 404) {
+            console.error('任务不存在或权限不足')
+            return {
+              success: false,
+              message: '任务不存在或权限不足'
+            }
+          }
+          
+          if (retryCount >= maxRetries) {
+            return {
+              success: false,
+              message: `评估计算超时，请稍后在任务列表中查看任务 ${taskId} 的结果`
+            }
+          }
+          
+          await new Promise(resolve => setTimeout(resolve, 2000))
+        }
+      }
+      
+      return {
+        success: false,
+        message: `评估计算可能需要更长时间，请稍后在任务列表中查看任务 ${taskId} 的结果`
+      }
+    }
+
     // 开始评估
     const startEvaluation = async () => {
+      // 检查登录状态
+      if (!isAuthenticated.value) {
+        ElMessage.warning('请先登录后再进行评估')
+        router.push('/login')
+        return
+      }
+      
       evaluationLoading.value = true
       currentStep.value = 3
-      progressPercentage.value = 0
+      progressPercentage.value = 10
+      currentProgress.value = '正在创建评估任务...'
       
       try {
-        // 模拟评估过程
-        const steps = [
-          '正在获取设施数据...',
-          '正在计算交通时间...',
-          '正在分析用户反馈...',
-          '正在计算便利度评分...',
-          '正在生成评估报告...'
-        ]
-        
-        for (let i = 0; i < steps.length; i++) {
-          currentProgress.value = steps[i]
-          progressPercentage.value = ((i + 1) / steps.length) * 100
-          await new Promise(resolve => setTimeout(resolve, 1000))
-        }
-        
-        // 创建评估任务
         // 将前端的交通方式映射为数据库期望的值
         const transportModeMapping = {
           'walking': 'walk',
@@ -844,17 +954,47 @@ export default {
           target_categories_sample: taskData.target_categories?.[0] || 'none'
         })
         
-        const result = await store.dispatch('evaluation/createEvaluationTask', taskData)
+        // 创建评估任务
+        progressPercentage.value = 20
+        currentProgress.value = '评估任务创建中...'
         
-        if (result.success) {
-          evaluationResult.value = result.task
-          ElMessage.success('评估完成')
+        console.log('准备创建评估任务，数据:', taskData)
+        const result = await store.dispatch('evaluation/createEvaluationTask', taskData)
+        console.log('Store返回结果:', result)
+        
+        if (!result.success) {
+          console.error('任务创建失败，原因:', result.message)
+          throw new Error(result.message || '创建评估任务失败')
+        }
+        
+        if (!result.data || !result.data.task_id) {
+          console.error('任务创建成功但数据格式异常:', result)
+          throw new Error('任务创建成功但未获得任务ID')
+        }
+        
+        const taskId = result.data.task_id
+        progressPercentage.value = 30
+        currentProgress.value = '评估任务创建成功，开始计算便利度评分...'
+        
+        console.log('评估任务创建成功，任务ID:', taskId)
+        
+        // 等待后端计算完成
+        const calculationResult = await waitForEvaluationCompletion(taskId)
+        
+        if (calculationResult.success) {
+          evaluationResult.value = { task_id: taskId }
+          currentProgress.value = '便利度评估已完成，点击查看详细结果'
+          progressPercentage.value = 100
+          ElMessage.success('便利度评估已完成！')
         } else {
-          throw new Error(result.message)
+          throw new Error(calculationResult.message || '评估计算失败')
         }
       } catch (error) {
-        ElMessage.error('评估失败: ' + error.message)
+        console.error('评估过程出错:', error)
+        ElMessage.error('评估失败: ' + (error.message || '评估过程中发生了错误，请重试'))
         evaluationResult.value = null
+        progressPercentage.value = 0
+        currentProgress.value = '评估失败，请重试'
       } finally {
         evaluationLoading.value = false
       }
@@ -938,7 +1078,8 @@ export default {
       clearSearchLocation,
       locationAccuracy,
       locationDetails,
-      refreshLocation
+      refreshLocation,
+      isAuthenticated
     }
   }
 }

@@ -26,14 +26,53 @@ export default {
       commit('SET_LOADING', true)
       try {
         const response = await api.post('/evaluation', taskData)
-        const task = response.data
-        commit('SET_CURRENT_TASK', task)
-        commit('ADD_EVALUATION_TASK', task)
-        return { success: true, task }
+        console.log('创建评估任务API响应:', response.data)
+        
+        // 处理多种可能的响应格式
+        let taskResult;
+        
+        if (response.data.success && response.data.data) {
+          // 标准格式: { success: true, message: '...', data: { task_id } }
+          taskResult = {
+            success: true,
+            data: response.data.data
+          }
+        } else if (response.data.task_id) {
+          // 直接格式: { task_id: 33 }
+          taskResult = {
+            success: true,
+            data: { task_id: response.data.task_id }
+          }
+        } else if (response.data.success === false) {
+          // 错误格式: { success: false, message: '...' }
+          taskResult = {
+            success: false,
+            message: response.data.message || '创建评估任务失败'
+          }
+        } else {
+          // 未知格式，尝试寻找task_id
+          console.warn('未知的API响应格式:', response.data)
+          taskResult = {
+            success: false,
+            message: '服务器响应格式异常'
+          }
+        }
+        
+        if (taskResult.success) {
+          const task = taskResult.data
+          commit('SET_CURRENT_TASK', task)
+          commit('ADD_EVALUATION_TASK', task)
+          console.log('任务创建成功，返回数据:', taskResult)
+          return taskResult
+        } else {
+          console.error('任务创建失败:', taskResult.message)
+          return taskResult
+        }
       } catch (error) {
+        console.error('创建评估任务失败:', error)
         return { 
           success: false, 
-          message: error.response?.data?.message || '创建评估任务失败'
+          message: error.response?.data?.message || error.message || '创建评估任务失败'
         }
       } finally {
         commit('SET_LOADING', false)

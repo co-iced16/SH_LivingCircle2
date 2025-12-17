@@ -287,11 +287,10 @@ const updateFacility = async (req, res) => {
     await pool.execute(`
       UPDATE facilities SET 
         name = COALESCE(?, name),
-        address = COALESCE(?, address),
         category_code = COALESCE(?, category_code),
         last_updated = CURRENT_TIMESTAMP
       WHERE facility_id = ?
-    `, [name, address, category_code, id]);
+    `, [name, category_code, id]);
 
     res.json({
       success: true,

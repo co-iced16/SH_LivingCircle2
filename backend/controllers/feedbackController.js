@@ -1,4 +1,5 @@
 const { pool } = require('../config/database');
+const { validateAndMapCategoryCode } = require('../utils/categoryMapping');
 
 // 辅助函数：从地址中提取区域代码
 function extractDistrictCode(address) {
@@ -200,19 +201,22 @@ const submitFacilityFeedback = async (req, res) => {
         district_code
       });
 
-      // 验证 category_code 是否存在
-      const [categoryCheck] = await pool.execute(
-        'SELECT category_code FROM facility_categories WHERE category_code = ?',
-        [category_code]
-      );
-
-      if (categoryCheck.length === 0) {
+      // 验证并映射分类代码
+      const categoryValidation = await validateAndMapCategoryCode(category_code);
+      
+      if (!categoryValidation.isValid) {
         console.log(`无效的分类代码: ${category_code}`);
         return res.status(400).json({
           success: false,
           message: `无效的设施分类代码: ${category_code}。请从有效分类中选择。`,
           error_code: 'INVALID_CATEGORY_CODE'
         });
+      }
+
+      // 使用映射后的分类代码
+      const finalCategoryCode = categoryValidation.mappedCode;
+      if (finalCategoryCode !== category_code) {
+        console.log(`分类代码映射: ${category_code} -> ${finalCategoryCode}`);
       }
 
       // 提取区域代码（如果没有提供）
@@ -235,19 +239,19 @@ const submitFacilityFeedback = async (req, res) => {
         locationId = locationResult.insertId;
       }
 
-      // 检查是否已存在相同设施
+      // 检查是否已存在相同设施（使用映射后的分类代码）
       const [existingFacility] = await pool.execute(
         'SELECT facility_id FROM facilities WHERE name = ? AND location_id = ? AND category_code = ?',
-        [facility_name, locationId, category_code]
+        [facility_name, locationId, finalCategoryCode]
       );
 
       if (existingFacility.length > 0) {
         actualFacilityId = existingFacility[0].facility_id;
       } else {
-        // 创建新设施
+        // 创建新设施（使用映射后的分类代码）
         const [facilityResult] = await pool.execute(
           'INSERT INTO facilities (name, location_id, category_code) VALUES (?, ?, ?)',
-          [facility_name, locationId, category_code]
+          [facility_name, locationId, finalCategoryCode]
         );
         actualFacilityId = facilityResult.insertId;
       }

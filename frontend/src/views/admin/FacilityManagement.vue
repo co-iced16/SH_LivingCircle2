@@ -13,21 +13,17 @@
             <el-icon><Plus /></el-icon>
             添加设施
           </el-button>
-          <el-button @click="batchImport">
+          <el-button @click="showImportDialog">
             <el-icon><Upload /></el-icon>
-            批量导入
-          </el-button>
-          <el-button @click="exportData">
-            <el-icon><Download /></el-icon>
-            导出数据
+            高德导入
           </el-button>
         </div>
         <div class="toolbar-right">
           <el-input
             v-model="searchKeyword"
-            placeholder="搜索设施名称或地址"
+            placeholder="搜索设施名称"
             clearable
-            style="width: 250px; margin-right: 12px;"
+            style="width: 200px; margin-right: 12px;"
             @input="handleSearch"
           >
             <template #prefix>
@@ -38,11 +34,11 @@
             v-model="selectedCategory"
             placeholder="选择分类"
             clearable
-            style="width: 200px;"
+            style="width: 180px;"
             @change="handleCategoryFilter"
           >
             <el-option
-              v-for="category in facilityCategories"
+              v-for="category in categories"
               :key="category.category_code"
               :label="category.category_name"
               :value="category.category_code"
@@ -56,94 +52,102 @@
     <div class="card-container">
       <h2 class="section-title">数据统计</h2>
       <el-row :gutter="24">
-        <el-col :span="6">
-          <div class="stat-card">
+        <el-col :span="8">
+          <div class="stat-card clickable" :class="{ active: viewMode === 'all' }" @click="switchViewMode('all')">
             <div class="stat-number">{{ stats.total }}</div>
             <div class="stat-label">总设施数</div>
           </div>
         </el-col>
-        <el-col :span="6">
-          <div class="stat-card">
+        <el-col :span="8">
+          <div class="stat-card clickable" :class="{ active: viewMode === 'withFeedback' }" @click="switchViewMode('withFeedback')">
             <div class="stat-number">{{ stats.withFeedback }}</div>
             <div class="stat-label">有评价设施</div>
           </div>
         </el-col>
-        <el-col :span="6">
-          <div class="stat-card">
+        <el-col :span="8">
+          <div class="stat-card clickable" :class="{ active: viewMode === 'categories' }" @click="switchViewMode('categories')">
             <div class="stat-number">{{ stats.categories }}</div>
             <div class="stat-label">设施分类</div>
-          </div>
-        </el-col>
-        <el-col :span="6">
-          <div class="stat-card">
-            <div class="stat-number">{{ stats.lastWeek }}</div>
-            <div class="stat-label">本周新增</div>
           </div>
         </el-col>
       </el-row>
     </div>
 
     <!-- 设施列表 -->
-    <div class="card-container">
-      <h2 class="section-title">设施列表</h2>
+    <div class="card-container" v-if="viewMode !== 'categories'">
+      <div class="section-header">
+        <h2 class="section-title">{{ viewMode === 'withFeedback' ? '有评价设施列表' : '设施列表' }}</h2>
+        <span class="result-count">共 {{ pagination.total }} 条结果</span>
+      </div>
       
-      <el-table
-        :data="facilities"
-        v-loading="loading"
-        style="width: 100%"
-        @selection-change="handleSelectionChange"
-      >
-        <el-table-column type="selection" width="55" />
+      <el-table :data="facilities" v-loading="loading" style="width: 100%" stripe>
+        <el-table-column prop="facility_id" label="ID" width="80" />
         <el-table-column prop="name" label="设施名称" min-width="150" />
-        <el-table-column prop="category_name" label="分类" width="120" />
+        <el-table-column prop="category_name" label="分类" width="150" />
         <el-table-column prop="address" label="地址" min-width="200" show-overflow-tooltip />
-        <el-table-column label="坐标" width="150">
+        <el-table-column label="坐标" width="180">
           <template #default="{ row }">
-            {{ row.longitude }}, {{ row.latitude }}
+            <span v-if="row.longitude && row.latitude">
+              {{ Number(row.longitude).toFixed(4) }}, {{ Number(row.latitude).toFixed(4) }}
+            </span>
+            <span v-else class="no-data">-</span>
           </template>
         </el-table-column>
-        <el-table-column label="评价" width="100" align="center">
+        <el-table-column label="评价" width="120" align="center">
           <template #default="{ row }">
-            <div v-if="row.average_score">
-              <el-rate :model-value="row.average_score" disabled size="small" />
-              <div class="rating-text">{{ row.feedback_count }}条</div>
+            <div v-if="row.average_score > 0">
+              <span class="score-value">{{ Number(row.average_score).toFixed(1) }}</span>
+              <span class="feedback-count">({{ row.feedback_count }}条)</span>
             </div>
             <span v-else class="no-rating">暂无评价</span>
           </template>
         </el-table-column>
-        <el-table-column prop="last_updated" label="更新时间" width="160" />
-        <el-table-column label="操作" width="150" fixed="right">
+        <el-table-column label="操作" width="120" fixed="right" align="center">
           <template #default="{ row }">
-            <el-button type="text" size="small" @click="editFacility(row)">
-              编辑
+            <div class="action-buttons">
+              <el-button type="primary" link size="small" @click="editFacility(row)">
+                编辑
+              </el-button>
+              <el-popconfirm
+                title="确定要删除这个设施吗？"
+                @confirm="deleteFacility(row)"
+              >
+                <template #reference>
+                  <el-button type="danger" link size="small">
+                    删除
+                  </el-button>
+                </template>
+              </el-popconfirm>
+            </div>
+          </template>
+        </el-table-column>
+      </el-table>
+    
+    <!-- 设施分类列表 -->
+    </div>
+    <div class="card-container" v-else>
+      <h2 class="section-title">设施分类列表</h2>
+      <el-table :data="categories" v-loading="loading" style="width: 100%" stripe>
+        <el-table-column prop="category_code" label="分类编码" width="150" />
+        <el-table-column prop="category_name" label="分类名称" min-width="200" />
+        <el-table-column label="操作" width="100">
+          <template #default="{ row }">
+            <el-button type="text" size="small" @click="filterByCategory(row.category_code)">
+              查看设施
             </el-button>
-            <el-button type="text" size="small" @click="viewFeedbacks(row)">
-              评价
-            </el-button>
-            <el-popconfirm
-              title="确定要删除这个设施吗？"
-              @confirm="deleteFacility(row)"
-            >
-              <template #reference>
-                <el-button type="text" size="small" style="color: #f56c6c;">
-                  删除
-                </el-button>
-              </template>
-            </el-popconfirm>
           </template>
         </el-table-column>
       </el-table>
 
-      <!-- 分页 -->
       <div class="pagination-container">
         <el-pagination
           v-model:current-page="currentPage"
           v-model:page-size="pageSize"
           :page-sizes="[10, 20, 50, 100]"
           layout="total, sizes, prev, pager, next, jumper"
-          :total="total"
-          @size-change="handleSizeChange"
-          @current-change="handleCurrentChange"
+          :total="pagination.total"
+          @size-change="loadFacilities"
+          @current-change="loadFacilities"
         />
       </div>
     </div>
@@ -166,40 +170,53 @@
         </el-form-item>
         
         <el-form-item label="设施分类" prop="category_code">
-          <el-cascader
+          <el-select
             v-model="facilityForm.category_code"
-            :options="facilityCategories"
-            :props="cascaderProps"
             placeholder="请选择设施分类"
             style="width: 100%;"
-          />
+            filterable
+          >
+            <el-option
+              v-for="category in categories"
+              :key="category.category_code"
+              :label="category.category_name"
+              :value="category.category_code"
+            />
+          </el-select>
         </el-form-item>
         
-        <el-form-item label="详细地址" prop="address">
+        <el-form-item label="详细地址" prop="formatted_address">
           <el-input
-            v-model="facilityForm.address"
-            placeholder="请输入详细地址"
+            v-model="facilityForm.formatted_address"
+            placeholder="请输入详细地址，失焦后自动获取坐标"
             @blur="geocodeAddress"
           />
         </el-form-item>
         
-        <el-form-item label="经度" prop="longitude">
-          <el-input-number
-            v-model="facilityForm.longitude"
-            :precision="6"
-            placeholder="经度"
-            style="width: 100%;"
-          />
-        </el-form-item>
-        
-        <el-form-item label="纬度" prop="latitude">
-          <el-input-number
-            v-model="facilityForm.latitude"
-            :precision="6"
-            placeholder="纬度"
-            style="width: 100%;"
-          />
-        </el-form-item>
+        <el-row :gutter="16">
+          <el-col :span="12">
+            <el-form-item label="经度" prop="longitude">
+              <el-input-number
+                v-model="facilityForm.longitude"
+                :precision="6"
+                :controls="false"
+                placeholder="经度"
+                style="width: 100%;"
+              />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="纬度" prop="latitude">
+              <el-input-number
+                v-model="facilityForm.latitude"
+                :precision="6"
+                :controls="false"
+                placeholder="纬度"
+                style="width: 100%;"
+              />
+            </el-form-item>
+          </el-col>
+        </el-row>
       </el-form>
       
       <template #footer>
@@ -210,12 +227,36 @@
       </template>
     </el-dialog>
 
+    <!-- 高德导入弹窗 -->
+    <el-dialog v-model="importDialogVisible" title="从高德地图导入设施" width="500px">
+      <el-form :model="importForm" label-width="100px">
+        <el-form-item label="搜索关键词">
+          <el-input v-model="importForm.keywords" placeholder="如：便利店、超市、医院等" />
+        </el-form-item>
+        <el-form-item label="城市">
+          <el-input v-model="importForm.city" placeholder="上海" />
+        </el-form-item>
+        <el-form-item label="设施分类">
+          <el-select v-model="importForm.category_code" placeholder="选择分类" style="width: 100%;" filterable>
+            <el-option
+              v-for="category in categories"
+              :key="category.category_code"
+              :label="category.category_name"
+              :value="category.category_code"
+            />
+          </el-select>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="importDialogVisible = false">取消</el-button>
+        <el-button type="primary" @click="importFromAmap" :loading="importLoading">
+          开始导入
+        </el-button>
+      </template>
+    </el-dialog>
+
     <!-- 设施评价弹窗 -->
-    <el-dialog
-      v-model="feedbackDialogVisible"
-      title="设施评价"
-      width="800px"
-    >
+    <el-dialog v-model="feedbackDialogVisible" title="设施评价" width="700px">
       <div v-if="selectedFacility">
         <div class="facility-info">
           <h3>{{ selectedFacility.name }}</h3>
@@ -224,7 +265,11 @@
         
         <el-divider />
         
-        <div class="feedback-list">
+        <div v-if="feedbackLoading" class="loading-feedback">
+          <el-icon class="is-loading"><Loading /></el-icon>
+          <span>加载中...</span>
+        </div>
+        <div v-else-if="facilityFeedbacks.length > 0" class="feedback-list">
           <div
             v-for="feedback in facilityFeedbacks"
             :key="feedback.feedback_id"
@@ -236,252 +281,235 @@
                 <el-rate :model-value="feedback.score" disabled size="small" />
                 <span class="score-text">{{ feedback.score }}分</span>
               </div>
-              <div class="feedback-date">{{ feedback.submitted_at }}</div>
+              <div class="feedback-date">{{ formatDate(feedback.submitted_at) }}</div>
             </div>
-            <div class="feedback-content">{{ feedback.content }}</div>
-          </div>
-          
-          <div v-if="facilityFeedbacks.length === 0" class="empty-feedback">
-            <el-empty description="暂无评价" />
+            <div class="feedback-content">{{ feedback.content || '用户未留下文字评价' }}</div>
           </div>
         </div>
+        <el-empty v-else description="暂无评价" />
       </div>
     </el-dialog>
   </div>
 </template>
 
 <script>
-import { ref, reactive, computed, onMounted } from 'vue'
-import { useStore } from 'vuex'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ref, reactive, onMounted } from 'vue'
+import { ElMessage } from 'element-plus'
+import api from '@/utils/api'
 import { AmapUtils } from '@/utils/map'
 
 export default {
   name: 'FacilityManagement',
   setup() {
-    const store = useStore()
-    
     const loading = ref(false)
     const saveLoading = ref(false)
+    const importLoading = ref(false)
+    const feedbackLoading = ref(false)
+    
     const facilities = ref([])
-    const selectedFacilities = ref([])
+    const categories = ref([])
+    const searchKeyword = ref('')
+    const selectedCategory = ref('')
+    const currentPage = ref(1)
+    const pageSize = ref(20)
+    const pagination = ref({ total: 0, pages: 0 })
+    const viewMode = ref('all') // 'all', 'withFeedback', 'categories'
+    
+    const stats = ref({
+      total: 0,
+      withFeedback: 0,
+      categories: 0
+    })
+    
     const facilityDialogVisible = ref(false)
+    const importDialogVisible = ref(false)
     const feedbackDialogVisible = ref(false)
     const isEdit = ref(false)
     const selectedFacility = ref(null)
     const facilityFeedbacks = ref([])
     
-    // 搜索和过滤
-    const searchKeyword = ref('')
-    const selectedCategory = ref('')
-    const currentPage = ref(1)
-    const pageSize = ref(20)
-    const total = ref(0)
-    
-    // 统计数据
-    const stats = ref({
-      total: 0,
-      withFeedback: 0,
-      categories: 0,
-      lastWeek: 0
-    })
-    
-    // 表单
     const facilityFormRef = ref()
     const facilityForm = reactive({
       facility_id: null,
       name: '',
-      category_code: [],
-      address: '',
+      category_code: '',
+      formatted_address: '',
       longitude: null,
       latitude: null
     })
     
+    const importForm = reactive({
+      keywords: '',
+      city: '上海',
+      category_code: ''
+    })
+    
     const facilityRules = {
-      name: [
-        { required: true, message: '请输入设施名称', trigger: 'blur' }
-      ],
-      category_code: [
-        { required: true, message: '请选择设施分类', trigger: 'change' }
-      ],
-      address: [
-        { required: true, message: '请输入详细地址', trigger: 'blur' }
-      ],
-      longitude: [
-        { required: true, message: '请输入经度', trigger: 'blur' }
-      ],
-      latitude: [
-        { required: true, message: '请输入纬度', trigger: 'blur' }
-      ]
+      name: [{ required: true, message: '请输入设施名称', trigger: 'blur' }],
+      category_code: [{ required: true, message: '请选择设施分类', trigger: 'change' }],
+      formatted_address: [{ required: true, message: '请输入详细地址', trigger: 'blur' }],
+      longitude: [{ required: true, message: '请输入经度', trigger: 'blur' }],
+      latitude: [{ required: true, message: '请输入纬度', trigger: 'blur' }]
     }
-    
-    const cascaderProps = {
-      value: 'category_code',
-      label: 'category_name',
-      children: 'children',
-      checkStrictly: true
+
+    const loadCategories = async () => {
+      try {
+        const res = await api.get('/facilities/categories')
+        if (res.success) {
+          categories.value = res.data
+          stats.value.categories = res.data.length
+        }
+      } catch (error) {
+        console.error('获取分类失败:', error)
+      }
     }
-    
-    const facilityCategories = computed(() => store.getters['facilities/categoriesTree'])
-    
-    // 加载设施列表
+
+    const loadStats = async () => {
+      try {
+        const res = await api.get('/facilities/stats')
+        if (res.success) {
+          stats.value.total = res.data.total
+          stats.value.withFeedback = res.data.with_feedback || 0
+        }
+      } catch (error) {
+        console.error('获取统计失败:', error)
+      }
+    }
+
     const loadFacilities = async () => {
       loading.value = true
       try {
-        const params = {
-          page: currentPage.value,
-          pageSize: pageSize.value,
-          keyword: searchKeyword.value,
-          category: selectedCategory.value
-        }
-        
-        // 模拟API调用
-        const mockData = generateMockFacilities()
-        facilities.value = mockData.facilities
-        total.value = mockData.total
-        
-        // 更新统计数据
-        stats.value = {
-          total: mockData.total,
-          withFeedback: Math.floor(mockData.total * 0.6),
-          categories: facilityCategories.value.length,
-          lastWeek: Math.floor(Math.random() * 50) + 10
+        const res = await api.get('/facilities/with-feedback', {
+          params: {
+            page: currentPage.value,
+            limit: pageSize.value,
+            keyword: searchKeyword.value || undefined,
+            category_code: selectedCategory.value || undefined,
+            with_feedback_only: viewMode.value === 'withFeedback' ? 'true' : undefined
+          }
+        })
+        if (res.success) {
+          facilities.value = res.data.facilities
+          pagination.value = res.data.pagination
         }
       } catch (error) {
-        ElMessage.error('加载设施列表失败')
+        console.error('获取设施列表失败:', error)
+        ElMessage.error('获取设施列表失败')
       } finally {
         loading.value = false
       }
     }
-    
-    // 生成模拟数据
-    const generateMockFacilities = () => {
-      const mockFacilities = []
-      const categories = [
-        { code: '060200', name: '便利店' },
-        { code: '060400', name: '超市' },
-        { code: '090300', name: '诊所' },
-        { code: '050300', name: '快餐厅' },
-        { code: '150700', name: '公交站' }
-      ]
-      
-      for (let i = 1; i <= 100; i++) {
-        const category = categories[Math.floor(Math.random() * categories.length)]
-        mockFacilities.push({
-          facility_id: i,
-          name: `${category.name}${i}`,
-          category_code: category.code,
-          category_name: category.name,
-          address: `上海市徐汇区某街道${i}号`,
-          longitude: 121.4 + Math.random() * 0.1,
-          latitude: 31.2 + Math.random() * 0.1,
-          average_score: Math.random() > 0.3 ? (Math.random() * 2 + 3).toFixed(1) : null,
-          feedback_count: Math.random() > 0.3 ? Math.floor(Math.random() * 20) + 1 : 0,
-          last_updated: new Date(Date.now() - Math.random() * 30 * 24 * 60 * 60 * 1000).toLocaleDateString()
-        })
-      }
-      
-      return {
-        facilities: mockFacilities.slice((currentPage.value - 1) * pageSize.value, currentPage.value * pageSize.value),
-        total: mockFacilities.length
-      }
-    }
-    
-    // 搜索处理
+
     const handleSearch = () => {
       currentPage.value = 1
       loadFacilities()
     }
-    
-    // 分类过滤
+
     const handleCategoryFilter = () => {
       currentPage.value = 1
       loadFacilities()
     }
-    
-    // 分页处理
-    const handleSizeChange = (size) => {
-      pageSize.value = size
+
+    const switchViewMode = (mode) => {
+      viewMode.value = mode
+      currentPage.value = 1
+      selectedCategory.value = ''
+      searchKeyword.value = ''
+      if (mode !== 'categories') {
+        loadFacilities()
+      }
+    }
+
+    const filterByCategory = (categoryCode) => {
+      viewMode.value = 'all'
+      selectedCategory.value = categoryCode
+      currentPage.value = 1
       loadFacilities()
     }
-    
-    const handleCurrentChange = (page) => {
-      currentPage.value = page
-      loadFacilities()
-    }
-    
-    // 选择变化
-    const handleSelectionChange = (selection) => {
-      selectedFacilities.value = selection
-    }
-    
-    // 显示添加弹窗
+
     const showAddDialog = () => {
       isEdit.value = false
       facilityDialogVisible.value = true
     }
-    
-    // 编辑设施
-    const editFacility = (facility) => {
-      isEdit.value = true
-      facilityForm.facility_id = facility.facility_id
-      facilityForm.name = facility.name
-      facilityForm.category_code = [facility.category_code]
-      facilityForm.address = facility.address
-      facilityForm.longitude = facility.longitude
-      facilityForm.latitude = facility.latitude
-      facilityDialogVisible.value = true
+
+    const showImportDialog = () => {
+      importDialogVisible.value = true
     }
-    
-    // 查看评价
+
+    const editFacility = async (facility) => {
+      isEdit.value = true
+      // 获取详情
+      try {
+        const res = await api.get(`/facilities/${facility.facility_id}`)
+        if (res.success) {
+          const data = res.data
+          facilityForm.facility_id = data.facility_id
+          facilityForm.name = data.name
+          facilityForm.category_code = data.category_code
+          facilityForm.formatted_address = data.address
+          facilityForm.longitude = parseFloat(data.longitude)
+          facilityForm.latitude = parseFloat(data.latitude)
+          facilityDialogVisible.value = true
+        }
+      } catch (error) {
+        // 如果获取详情失败，使用列表数据
+        facilityForm.facility_id = facility.facility_id
+        facilityForm.name = facility.name
+        facilityForm.category_code = facility.category_code
+        facilityForm.formatted_address = facility.address
+        facilityForm.longitude = parseFloat(facility.longitude)
+        facilityForm.latitude = parseFloat(facility.latitude)
+        facilityDialogVisible.value = true
+      }
+    }
+
     const viewFeedbacks = async (facility) => {
       selectedFacility.value = facility
       feedbackDialogVisible.value = true
+      feedbackLoading.value = true
       
-      // 模拟加载评价数据
-      facilityFeedbacks.value = [
-        {
-          feedback_id: 1,
-          username: '张三',
-          score: 4,
-          content: '服务很好，位置便利',
-          submitted_at: '2023-12-01 14:30'
-        },
-        {
-          feedback_id: 2,
-          username: '李四',
-          score: 5,
-          content: '非常满意，推荐！',
-          submitted_at: '2023-12-02 09:15'
+      try {
+        const res = await api.get('/feedback/facility', {
+          params: { facility_id: facility.facility_id }
+        })
+        if (res.success) {
+          facilityFeedbacks.value = res.data.feedbacks || []
         }
-      ]
+      } catch (error) {
+        facilityFeedbacks.value = []
+      } finally {
+        feedbackLoading.value = false
+      }
     }
-    
-    // 删除设施
+
     const deleteFacility = async (facility) => {
       try {
-        // 调用删除API
-        ElMessage.success('删除成功')
-        loadFacilities()
+        const res = await api.delete(`/facilities/${facility.facility_id}`)
+        if (res.success) {
+          ElMessage.success('删除成功')
+          loadFacilities()
+          loadStats()
+        }
       } catch (error) {
         ElMessage.error('删除失败')
       }
     }
-    
-    // 地理编码
+
     const geocodeAddress = async () => {
-      if (!facilityForm.address) return
+      if (!facilityForm.formatted_address) return
       
       try {
-        const result = await AmapUtils.geocode(facilityForm.address)
-        facilityForm.longitude = result.longitude
-        facilityForm.latitude = result.latitude
+        const result = await AmapUtils.geocode(facilityForm.formatted_address)
+        if (result && result.length > 0) {
+          facilityForm.longitude = result[0].longitude
+          facilityForm.latitude = result[0].latitude
+          ElMessage.success('坐标获取成功')
+        }
       } catch (error) {
         console.error('地理编码失败:', error)
       }
     }
-    
-    // 保存设施
+
     const saveFacility = async () => {
       if (!facilityFormRef.value) return
       
@@ -489,92 +517,127 @@ export default {
         await facilityFormRef.value.validate()
         saveLoading.value = true
         
-        const facilityData = {
-          ...facilityForm,
-          category_code: facilityForm.category_code[facilityForm.category_code.length - 1]
-        }
-        
-        // 调用保存API
         if (isEdit.value) {
-          // 更新
-          ElMessage.success('更新成功')
+          const res = await api.put(`/facilities/${facilityForm.facility_id}`, {
+            name: facilityForm.name,
+            category_code: facilityForm.category_code,
+            address: facilityForm.formatted_address,
+            longitude: facilityForm.longitude,
+            latitude: facilityForm.latitude
+          })
+          if (res.success) {
+            ElMessage.success('更新成功')
+          }
         } else {
-          // 添加
-          ElMessage.success('添加成功')
+          const res = await api.post('/facilities', {
+            name: facilityForm.name,
+            category_code: facilityForm.category_code,
+            formatted_address: facilityForm.formatted_address,
+            longitude: facilityForm.longitude,
+            latitude: facilityForm.latitude
+          })
+          if (res.success) {
+            ElMessage.success('添加成功')
+          }
         }
         
         facilityDialogVisible.value = false
         loadFacilities()
+        loadStats()
       } catch (error) {
-        console.error('保存失败:', error)
+        if (error !== 'cancel') {
+          ElMessage.error('保存失败')
+        }
       } finally {
         saveLoading.value = false
       }
     }
-    
-    // 重置表单
+
     const resetFacilityForm = () => {
       facilityFormRef.value?.resetFields()
-      Object.keys(facilityForm).forEach(key => {
-        if (Array.isArray(facilityForm[key])) {
-          facilityForm[key] = []
-        } else {
-          facilityForm[key] = null
+      facilityForm.facility_id = null
+      facilityForm.name = ''
+      facilityForm.category_code = ''
+      facilityForm.formatted_address = ''
+      facilityForm.longitude = null
+      facilityForm.latitude = null
+    }
+
+    const importFromAmap = async () => {
+      if (!importForm.keywords || !importForm.category_code) {
+        ElMessage.warning('请填写搜索关键词和选择分类')
+        return
+      }
+      
+      importLoading.value = true
+      try {
+        const res = await api.post('/facilities/import', {
+          keywords: importForm.keywords,
+          city: importForm.city,
+          category_code: importForm.category_code
+        })
+        if (res.success) {
+          ElMessage.success(res.data.message)
+          importDialogVisible.value = false
+          loadFacilities()
+          loadStats()
         }
-      })
+      } catch (error) {
+        ElMessage.error('导入失败')
+      } finally {
+        importLoading.value = false
+      }
     }
-    
-    // 批量导入
-    const batchImport = () => {
-      ElMessage.info('批量导入功能开发中...')
+
+    const formatDate = (date) => {
+      if (!date) return ''
+      return new Date(date).toLocaleString('zh-CN')
     }
-    
-    // 导出数据
-    const exportData = () => {
-      ElMessage.info('数据导出功能开发中...')
-    }
-    
+
     onMounted(() => {
-      store.dispatch('facilities/fetchCategories')
+      loadCategories()
+      loadStats()
       loadFacilities()
     })
-    
+
     return {
       loading,
       saveLoading,
+      importLoading,
+      feedbackLoading,
       facilities,
-      selectedFacilities,
-      facilityDialogVisible,
-      feedbackDialogVisible,
-      isEdit,
-      selectedFacility,
-      facilityFeedbacks,
+      categories,
       searchKeyword,
       selectedCategory,
       currentPage,
       pageSize,
-      total,
+      pagination,
       stats,
+      viewMode,
+      facilityDialogVisible,
+      importDialogVisible,
+      feedbackDialogVisible,
+      isEdit,
+      selectedFacility,
+      facilityFeedbacks,
       facilityFormRef,
       facilityForm,
+      importForm,
       facilityRules,
-      cascaderProps,
-      facilityCategories,
       loadFacilities,
       handleSearch,
       handleCategoryFilter,
-      handleSizeChange,
-      handleCurrentChange,
-      handleSelectionChange,
+      switchViewMode,
+      filterByCategory,
       showAddDialog,
+      showImportDialog,
       editFacility,
-      viewFeedbacks,
       deleteFacility,
       geocodeAddress,
       saveFacility,
       resetFacilityForm,
-      batchImport,
-      exportData
+      importFromAmap,
+      formatDate
     }
   }
 }
@@ -605,7 +668,6 @@ export default {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 16px;
 }
 
 .toolbar-left {
@@ -626,6 +688,21 @@ export default {
   border: 1px solid #ebeef5;
 }
 
+.stat-card.clickable {
+  cursor: pointer;
+  transition: all 0.3s;
+}
+
+.stat-card.clickable:hover {
+  border-color: #409EFF;
+  box-shadow: 0 2px 12px rgba(64, 158, 255, 0.2);
+}
+
+.stat-card.clickable.active {
+  border-color: #409EFF;
+  background: #ecf5ff;
+}
+
 .stat-number {
   font-size: 28px;
   font-weight: bold;
@@ -638,15 +715,46 @@ export default {
   font-size: 14px;
 }
 
-.rating-text {
-  font-size: 12px;
+.no-data {
+  color: #c0c4cc;
+}
+
+.score-value {
+  color: #f7ba2a;
+  font-weight: bold;
+}
+
+.feedback-count {
   color: #909399;
-  margin-top: 2px;
+  font-size: 12px;
+  margin-left: 4px;
 }
 
 .no-rating {
   color: #c0c4cc;
   font-size: 12px;
+}
+
+.action-buttons {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+}
+
+.section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+.section-header .section-title {
+  margin-bottom: 0;
+}
+
+.result-count {
+  color: #909399;
+  font-size: 14px;
 }
 
 .pagination-container {
@@ -666,6 +774,17 @@ export default {
 .facility-info p {
   margin: 0;
   color: #666;
+}
+
+.loading-feedback {
+  text-align: center;
+  padding: 40px;
+  color: #909399;
+}
+
+.loading-feedback .el-icon {
+  font-size: 24px;
+  margin-right: 8px;
 }
 
 .feedback-list {
@@ -708,20 +827,11 @@ export default {
 }
 
 .feedback-content {
-  color: #666;
+  color: #606266;
   line-height: 1.6;
 }
 
-.empty-feedback {
-  text-align: center;
-  padding: 40px 20px;
-}
-
 @media (max-width: 768px) {
-  .facility-management-container {
-    margin: 0 16px;
-  }
-  
   .toolbar {
     flex-direction: column;
     gap: 16px;
@@ -730,7 +840,6 @@ export default {
   .toolbar-left,
   .toolbar-right {
     width: 100%;
-    justify-content: center;
   }
   
   .toolbar-right {

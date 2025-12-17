@@ -37,9 +37,11 @@ const createReport = async (req, res) => {
 const getReports = async (req, res) => {
   try {
     const { page = 1, limit = 10 } = req.query;
-    const offset = (page - 1) * limit;
+    const pageNum = parseInt(page);
+    const limitNum = parseInt(limit);
+    const offset = (pageNum - 1) * limitNum;
 
-    const [reports] = await pool.execute(`
+    const [reports] = await pool.query(`
       SELECT 
         pr.report_id,
         pr.title,
@@ -51,8 +53,8 @@ const getReports = async (req, res) => {
       FROM planning_reports pr
       JOIN users u ON pr.admin_id = u.user_id
       ORDER BY pr.generated_at DESC
-      LIMIT ? OFFSET ?
-    `, [parseInt(limit), offset]);
+      LIMIT ${limitNum} OFFSET ${offset}
+    `);
 
     const [countResult] = await pool.execute(
       'SELECT COUNT(*) as total FROM planning_reports'
@@ -63,10 +65,10 @@ const getReports = async (req, res) => {
       data: {
         reports,
         pagination: {
-          page: parseInt(page),
-          limit: parseInt(limit),
+          page: pageNum,
+          limit: limitNum,
           total: countResult[0].total,
-          pages: Math.ceil(countResult[0].total / limit)
+          pages: Math.ceil(countResult[0].total / limitNum)
         }
       }
     });

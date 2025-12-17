@@ -5,8 +5,21 @@
 </template>
 
 <script>
+import { onMounted } from 'vue'
+import { useStore } from 'vuex'
+
 export default {
-  name: 'App'
+  name: 'App',
+  setup() {
+    const store = useStore()
+    
+    onMounted(async () => {
+      // 如果有 token 但没有用户信息，获取当前用户
+      if (store.state.auth.token && !store.state.auth.user) {
+        await store.dispatch('auth/getCurrentUser')
+      }
+    })
+  }
 }
 </script>
 

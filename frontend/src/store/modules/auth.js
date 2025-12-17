@@ -74,8 +74,8 @@ export default {
       if (!state.token) return
       
       try {
-        const response = await api.get('/auth/me')
-        commit('SET_USER', response.data)
+        const response = await api.get('/auth/profile')
+        commit('SET_USER', response.data.user || response.data)
         commit('SET_TOKEN', state.token)
       } catch (error) {
         commit('LOGOUT')

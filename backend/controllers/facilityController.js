@@ -436,7 +436,7 @@ const importPOIData = async (req, res) => {
 const getFacilityStats = async (req, res) => {
   try {
     const [stats] = await pool.execute(`
-      SELECT 
+      SELECT
         fc.category_name,
         fc.category_code,
         COUNT(f.facility_id) as count
@@ -450,11 +450,20 @@ const getFacilityStats = async (req, res) => {
       'SELECT COUNT(*) as total FROM facilities'
     );
 
+    // 统计有评价的设施数量
+    const [withFeedbackCount] = await pool.execute(`
+      SELECT COUNT(DISTINCT f.facility_id) as count
+      FROM facilities f
+      INNER JOIN facility_feedback ff ON f.facility_id = ff.facility_id
+      INNER JOIN feedback_base fb ON ff.feedback_id = fb.feedback_id
+    `);
+
     res.json({
       success: true,
       data: {
         by_category: stats,
-        total: totalCount[0].total
+        total: totalCount[0].total,
+        with_feedback: withFeedbackCount[0].count
       }
     });
 
@@ -519,19 +528,23 @@ const searchMapFacilities = async (req, res) => {
 // 获取设施详细信息并检查评价统计
 const getFacilitiesWithFeedback = async (req, res) => {
   try {
-    const { 
-      page = 1, 
-      limit = 20, 
-      category_code, 
+    const {
+      page = 1,
+      limit = 20,
+      category_code,
       keyword,
       longitude,
       latitude,
-      radius
+      radius,
+      with_feedback_only
     } = req.query;
 
-    const offset = (page - 1) * limit;
-    
+    const pageNum = parseInt(page);
+    const limitNum = parseInt(limit);
+    const offset = (pageNum - 1) * limitNum;
+
     let whereClause = 'WHERE 1=1';
+    let havingClause = '';
     let params = [];
 
     // 按分类筛选
@@ -550,16 +563,22 @@ const getFacilitiesWithFeedback = async (req, res) => {
     if (longitude && latitude && radius) {
       whereClause += ` AND (
         6371 * acos(
-          cos(radians(?)) * cos(radians(l.latitude)) * 
-          cos(radians(l.longitude) - radians(?)) + 
+          cos(radians(?)) * cos(radians(l.latitude)) *
+          cos(radians(l.longitude) - radians(?)) +
           sin(radians(?)) * sin(radians(l.latitude))
         )
       ) <= ?`;
-      params.push(latitude, longitude, latitude, radius / 1000);
+      params.push(parseFloat(latitude), parseFloat(longitude), parseFloat(latitude), parseFloat(radius) / 1000);
     }
 
-    const [facilities] = await pool.execute(`
-      SELECT 
+    // 只筛选有评价的设施
+    if (with_feedback_only === 'true') {
+      havingClause = 'HAVING COUNT(fb.feedback_id) > 0';
+    }
+
+    // 使用 query 而不是 execute 来避免参数类型问题
+    const [facilities] = await pool.query(`
+      SELECT
         f.facility_id,
         f.name,
         l.formatted_address as address,
@@ -577,29 +596,47 @@ const getFacilitiesWithFeedback = async (req, res) => {
       LEFT JOIN facility_feedback ff ON f.facility_id = ff.facility_id
       LEFT JOIN feedback_base fb ON ff.feedback_id = fb.feedback_id
       ${whereClause}
-      GROUP BY f.facility_id, f.name, l.formatted_address, f.category_code, 
+      GROUP BY f.facility_id, f.name, l.formatted_address, f.category_code,
                f.last_updated, fc.category_name, l.longitude, l.latitude, l.district_code
+      ${havingClause}
       ORDER BY feedback_count DESC, f.last_updated DESC
-      LIMIT ? OFFSET ?
-    `, [...params, parseInt(limit), offset]);
-
-    // 获取总数
-    const [countResult] = await pool.execute(`
-      SELECT COUNT(DISTINCT f.facility_id) as total
-      FROM facilities f
-      JOIN locations l ON f.location_id = l.location_id
-      ${whereClause}
+      LIMIT ${limitNum} OFFSET ${offset}
     `, params);
+
+    // 获取总数 - 需要使用子查询来处理 HAVING
+    let countSql;
+    if (with_feedback_only === 'true') {
+      countSql = `
+        SELECT COUNT(*) as total FROM (
+          SELECT f.facility_id
+          FROM facilities f
+          JOIN locations l ON f.location_id = l.location_id
+          LEFT JOIN facility_feedback ff ON f.facility_id = ff.facility_id
+          LEFT JOIN feedback_base fb ON ff.feedback_id = fb.feedback_id
+          ${whereClause}
+          GROUP BY f.facility_id
+          HAVING COUNT(fb.feedback_id) > 0
+        ) as sub
+      `;
+    } else {
+      countSql = `
+        SELECT COUNT(DISTINCT f.facility_id) as total
+        FROM facilities f
+        JOIN locations l ON f.location_id = l.location_id
+        ${whereClause}
+      `;
+    }
+    const [countResult] = await pool.query(countSql, params);
 
     res.json({
       success: true,
       data: {
         facilities,
         pagination: {
-          page: parseInt(page),
-          limit: parseInt(limit),
+          page: pageNum,
+          limit: limitNum,
           total: countResult[0].total,
-          pages: Math.ceil(countResult[0].total / limit)
+          pages: Math.ceil(countResult[0].total / limitNum)
         }
       }
     });

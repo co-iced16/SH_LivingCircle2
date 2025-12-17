@@ -307,19 +307,25 @@ const getFacilityFeedback = async (req, res) => {
     let whereClause = 'WHERE fb.feedback_type = "facility"';
     let params = [];
 
-    // 按设施筛选
+    // 按设施筛选 - 如果指定了设施ID，管理员可以查看该设施所有反馈
     if (facility_id) {
       whereClause += ' AND ff.facility_id = ?';
       params.push(facility_id);
-    }
-
-    // 按用户筛选（管理员可查看所有，用户只能查看自己的）
-    if (user_id && (req.user.role === 'admin' || req.user.user_id == user_id)) {
-      whereClause += ' AND fb.user_id = ?';
-      params.push(user_id);
-    } else if (req.user.role !== 'admin') {
-      whereClause += ' AND fb.user_id = ?';
-      params.push(req.user.user_id);
+      // 管理员可以查看指定设施的所有反馈
+      if (req.user.role !== 'admin') {
+        // 普通用户只能看自己的
+        whereClause += ' AND fb.user_id = ?';
+        params.push(req.user.user_id);
+      }
+    } else {
+      // 没有指定设施时，按用户筛选
+      if (user_id && (req.user.role === 'admin' || req.user.user_id == user_id)) {
+        whereClause += ' AND fb.user_id = ?';
+        params.push(user_id);
+      } else if (req.user.role !== 'admin') {
+        whereClause += ' AND fb.user_id = ?';
+        params.push(req.user.user_id);
+      }
     }
 
     const [feedbacks] = await pool.execute(`

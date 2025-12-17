@@ -128,9 +128,9 @@ export default {
         const res = await api.get('/reports', {
           params: { page: this.pagination.page, limit: this.pagination.limit }
         })
-        if (res.data.success) {
-          this.reports = res.data.data.reports
-          this.pagination = { ...this.pagination, ...res.data.data.pagination }
+        if (res.success) {
+          this.reports = res.data.reports
+          this.pagination = { ...this.pagination, ...res.data.pagination }
         }
       } catch (error) {
         this.$message.error('获取报告列表失败')
@@ -151,7 +151,7 @@ export default {
           end_date: this.newReport.dateRange[1],
           region_boundary: null
         })
-        if (res.data.success) {
+        if (res.success) {
           this.$message.success('报告创建成功')
           this.newReport = { title: '', dateRange: [] }
           this.fetchReports()
@@ -165,9 +165,9 @@ export default {
     async viewReport(row) {
       try {
         const res = await api.get(`/reports/${row.report_id}`)
-        if (res.data.success) {
-          this.currentReport = res.data.data.report
-          this.deficiencies = res.data.data.deficiencies
+        if (res.success) {
+          this.currentReport = res.data.report
+          this.deficiencies = res.data.deficiencies
           this.detailVisible = true
         }
       } catch (error) {
@@ -177,7 +177,7 @@ export default {
     async generateAnalysis(row) {
       try {
         const res = await api.post(`/reports/${row.report_id}/analyze`)
-        if (res.data.success) {
+        if (res.success) {
           this.$message.success(res.data.message)
           this.viewReport(row)
         }
@@ -189,7 +189,7 @@ export default {
       try {
         await this.$confirm('确定要删除此报告吗？', '提示', { type: 'warning' })
         const res = await api.delete(`/reports/${row.report_id}`)
-        if (res.data.success) {
+        if (res.success) {
           this.$message.success('删除成功')
           this.fetchReports()
         }

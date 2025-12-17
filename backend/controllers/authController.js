@@ -205,10 +205,175 @@ const changePassword = async (req, res) => {
   }
 };
 
+// 获取所有用户列表（管理员专用）
+const getUsers = async (req, res) => {
+  try {
+    const { page = 1, limit = 20, keyword } = req.query;
+    const offset = (parseInt(page) - 1) * parseInt(limit);
+
+    let whereClause = '';
+    let params = [];
+
+    if (keyword) {
+      whereClause = 'WHERE username LIKE ? OR email LIKE ?';
+      params.push(`%${keyword}%`, `%${keyword}%`);
+    }
+
+    const [users] = await pool.execute(`
+      SELECT user_id, username, email, role, 
+             (SELECT COUNT(*) FROM feedback_base WHERE user_id = users.user_id) as feedback_count,
+             (SELECT COUNT(*) FROM evaluation_tasks WHERE user_id = users.user_id) as evaluation_count
+      FROM users
+      ${whereClause}
+      ORDER BY user_id DESC
+      LIMIT ${parseInt(limit)} OFFSET ${offset}
+    `, params);
+
+    const [countResult] = await pool.execute(
+      `SELECT COUNT(*) as total FROM users ${whereClause}`,
+      params
+    );
+
+    res.json({
+      success: true,
+      data: {
+        users,
+        pagination: {
+          page: parseInt(page),
+          limit: parseInt(limit),
+          total: countResult[0].total,
+          pages: Math.ceil(countResult[0].total / parseInt(limit))
+        }
+      }
+    });
+
+  } catch (error) {
+    console.error('获取用户列表错误:', error);
+    res.status(500).json({
+      success: false,
+      message: '获取用户列表失败'
+    });
+  }
+};
+
+// 更新用户角色（管理员专用）
+const updateUserRole = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { role } = req.body;
+
+    if (!['user', 'admin'].includes(role)) {
+      return res.status(400).json({
+        success: false,
+        message: '无效的角色'
+      });
+    }
+
+    // 不能修改自己的角色
+    if (parseInt(id) === req.user.user_id) {
+      return res.status(400).json({
+        success: false,
+        message: '不能修改自己的角色'
+      });
+    }
+
+    await pool.execute(
+      'UPDATE users SET role = ? WHERE user_id = ?',
+      [role, id]
+    );
+
+    res.json({
+      success: true,
+      message: '用户角色更新成功'
+    });
+
+  } catch (error) {
+    console.error('更新用户角色错误:', error);
+    res.status(500).json({
+      success: false,
+      message: '更新用户角色失败'
+    });
+  }
+};
+
+// 删除用户（管理员专用）
+const deleteUser = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // 不能删除自己
+    if (parseInt(id) === req.user.user_id) {
+      return res.status(400).json({
+        success: false,
+        message: '不能删除自己'
+      });
+    }
+
+    const [result] = await pool.execute(
+      'DELETE FROM users WHERE user_id = ?',
+      [id]
+    );
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({
+        success: false,
+        message: '用户不存在'
+      });
+    }
+
+    res.json({
+      success: true,
+      message: '用户删除成功'
+    });
+
+  } catch (error) {
+    console.error('删除用户错误:', error);
+    res.status(500).json({
+      success: false,
+      message: '删除用户失败'
+    });
+  }
+};
+
+// 获取用户统计（管理员专用）
+const getUserStats = async (req, res) => {
+  try {
+    const [totalUsers] = await pool.execute('SELECT COUNT(*) as total FROM users');
+    const [adminCount] = await pool.execute("SELECT COUNT(*) as count FROM users WHERE role = 'admin'");
+    const [recentUsers] = await pool.execute(
+      'SELECT COUNT(*) as count FROM users WHERE user_id > (SELECT MAX(user_id) - 10 FROM users)'
+    );
+    const [activeFeedback] = await pool.execute(
+      'SELECT COUNT(DISTINCT user_id) as count FROM feedback_base'
+    );
+
+    res.json({
+      success: true,
+      data: {
+        total: totalUsers[0].total,
+        admins: adminCount[0].count,
+        users: totalUsers[0].total - adminCount[0].count,
+        activeUsers: activeFeedback[0].count
+      }
+    });
+
+  } catch (error) {
+    console.error('获取用户统计错误:', error);
+    res.status(500).json({
+      success: false,
+      message: '获取统计数据失败'
+    });
+  }
+};
+
 module.exports = {
   register,
   login,
   getProfile,
   updateProfile,
-  changePassword
+  changePassword,
+  getUsers,
+  updateUserRole,
+  deleteUser,
+  getUserStats
 };

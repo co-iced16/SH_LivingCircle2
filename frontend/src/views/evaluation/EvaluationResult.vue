@@ -261,6 +261,74 @@
         </template>
       </el-result>
     </div>
+
+    <!-- 设施详情弹窗 -->
+    <el-dialog
+      v-model="facilityDetailVisible"
+      :title="selectedFacility?.name || '设施详情'"
+      width="600px"
+      destroy-on-close
+    >
+      <div v-if="selectedFacility" class="facility-detail-content">
+        <!-- 基本信息 -->
+        <div class="detail-section">
+          <h4>基本信息</h4>
+          <el-descriptions :column="1" border>
+            <el-descriptions-item label="设施名称">{{ selectedFacility.name }}</el-descriptions-item>
+            <el-descriptions-item label="设施类型">{{ selectedFacility.category_name }}</el-descriptions-item>
+            <el-descriptions-item label="地址">{{ selectedFacility.address }}</el-descriptions-item>
+            <el-descriptions-item label="距离">{{ formatDistance(selectedFacility.distance) }}</el-descriptions-item>
+          </el-descriptions>
+        </div>
+
+        <!-- 交通时间 -->
+        <div class="detail-section">
+          <h4>交通时间</h4>
+          <div class="transport-times-detail">
+            <div
+              v-for="time in selectedFacility.transport_times"
+              :key="time.mode"
+              class="transport-item"
+            >
+              <span class="transport-mode">{{ getModeLabel(time.mode) }}</span>
+              <span class="transport-time">{{ formatTime(time.time) }}</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 用户评分 -->
+        <div class="detail-section">
+          <h4>用户评分</h4>
+          <div v-if="selectedFacility.average_score" class="rating-summary">
+            <el-rate :model-value="selectedFacility.average_score" disabled show-score />
+            <span class="rating-count">（{{ selectedFacility.feedback_count }}条评价）</span>
+          </div>
+          <div v-else class="no-rating">暂无用户评分</div>
+        </div>
+
+        <!-- 居民反馈列表 -->
+        <div class="detail-section">
+          <h4>居民反馈</h4>
+          <div v-if="selectedFacility.feedbacks && selectedFacility.feedbacks.length > 0" class="feedback-list">
+            <div
+              v-for="(feedback, index) in selectedFacility.feedbacks"
+              :key="index"
+              class="feedback-item"
+            >
+              <div class="feedback-header">
+                <el-rate :model-value="feedback.score" disabled size="small" />
+                <span class="feedback-time">{{ formatFeedbackTime(feedback.submitted_at) }}</span>
+              </div>
+              <div class="feedback-content">{{ feedback.content || '用户未留下文字评价' }}</div>
+            </div>
+          </div>
+          <el-empty v-else description="暂无居民反馈" :image-size="60" />
+        </div>
+      </div>
+      <template #footer>
+        <el-button @click="facilityDetailVisible = false">关闭</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -568,7 +636,11 @@ export default {
                 distance: detail.distance,
                 longitude: detail.facility_lng,
                 latitude: detail.facility_lat,
-                transport_times: []
+                transport_times: [],
+                // 从后端获取反馈信息
+                average_score: detail.avg_score || null,
+                feedback_count: detail.feedback_count || 0,
+                feedbacks: detail.feedbacks || []
               })
             }
             
@@ -794,9 +866,23 @@ export default {
       // 过滤逻辑已在computed中实现
     }
     
+    const facilityDetailVisible = ref(false)
+    const selectedFacility = ref(null)
+    
     const viewFacilityDetail = (facility) => {
-      // 可以打开设施详情弹窗或跳转到详情页
-      ElMessage.info(`查看 ${facility.name} 的详情`)
+      selectedFacility.value = facility
+      facilityDetailVisible.value = true
+    }
+    
+    const formatFeedbackTime = (time) => {
+      if (!time) return ''
+      return new Date(time).toLocaleString('zh-CN', {
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit'
+      })
     }
     
     onMounted(() => {
@@ -815,7 +901,10 @@ export default {
       filteredFacilities,
       categoryChartOption,
       suggestions,
+      facilityDetailVisible,
+      selectedFacility,
       loadEvaluationResult,
+      formatFeedbackTime,
       getTransportStats,
       getTransportChartOption,
       getModeLabel,
@@ -1058,6 +1147,96 @@ export default {
   color: #666;
   font-weight: 500;
   margin-top: 8px !important;
+}
+
+/* 设施详情弹窗样式 */
+.facility-detail-content {
+  max-height: 60vh;
+  overflow-y: auto;
+}
+
+.detail-section {
+  margin-bottom: 24px;
+}
+
+.detail-section h4 {
+  margin: 0 0 12px;
+  color: #303133;
+  font-size: 15px;
+  border-left: 3px solid #409EFF;
+  padding-left: 8px;
+}
+
+.transport-times-detail {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.transport-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  background: #f5f7fa;
+  border-radius: 6px;
+}
+
+.transport-mode {
+  color: #909399;
+  font-size: 14px;
+}
+
+.transport-time {
+  color: #303133;
+  font-weight: 500;
+}
+
+.rating-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.rating-count {
+  color: #909399;
+  font-size: 14px;
+}
+
+.no-rating {
+  color: #c0c4cc;
+  font-size: 14px;
+}
+
+.feedback-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.feedback-item {
+  padding: 12px;
+  background: #fafafa;
+  border-radius: 8px;
+  border: 1px solid #ebeef5;
+}
+
+.feedback-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.feedback-time {
+  color: #909399;
+  font-size: 12px;
+}
+
+.feedback-content {
+  color: #606266;
+  font-size: 14px;
+  line-height: 1.6;
 }
 
 @media (max-width: 768px) {

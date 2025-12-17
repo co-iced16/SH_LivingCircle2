@@ -508,9 +508,28 @@ async function performEvaluation(task_id, center_location_id, longitude, latitud
       const facilityFeedbacks = await getFacilityFeedback(categoryFacilityIds);
       
       console.log(`📋 类别 ${category_code} 找到 ${facilityFeedbacks.length} 条设施反馈`);
+      
+      // 为每个设施关联其反馈信息
+      const facilityFeedbackMap = new Map();
+      for (const fb of facilityFeedbacks) {
+        if (!facilityFeedbackMap.has(fb.facility_id)) {
+          facilityFeedbackMap.set(fb.facility_id, []);
+        }
+        facilityFeedbackMap.get(fb.facility_id).push(fb);
+      }
+      
+      // 为设施添加反馈信息
+      for (const facility of facilities) {
+        facility.feedbacks = facilityFeedbackMap.get(facility.facility_id) || [];
+        if (facility.feedbacks.length > 0) {
+          facility.avg_score = facility.feedbacks.reduce((sum, fb) => sum + fb.score, 0) / facility.feedbacks.length;
+        }
+      }
 
       // 计算该类别的便利度得分
       let category_score = 0;
+      let category_has_feedback = facilityFeedbacks.length > 0;
+      
       if (facilities.length > 0) {
         // === 1. 设施密度得分 (权重40%) ===
         // 设施数量达到10个就是满分
@@ -556,10 +575,9 @@ async function performEvaluation(task_id, center_location_id, longitude, latitud
         const accessibility_score = time_score * 0.7 + distance_score * 0.3;
         
         // === 3. 居民反馈得分（仅在有反馈时计入）===
-        let has_feedback = facilityFeedbacks.length > 0;
         let feedback_score = 0;
         
-        if (has_feedback) {
+        if (category_has_feedback) {
           const avg_feedback_score = facilityFeedbacks.reduce((sum, fb) => sum + fb.score, 0) / facilityFeedbacks.length;
           feedback_score = (avg_feedback_score / 5) * 100;
           console.log(`   - 设施反馈: ${facilityFeedbacks.length}条, 平均评分: ${avg_feedback_score.toFixed(1)}/5`);
@@ -568,7 +586,7 @@ async function performEvaluation(task_id, center_location_id, longitude, latitud
         // === 综合得分计算 ===
         // 无反馈时：设施密度55% + 可达性45%
         // 有反馈时：设施密度40% + 可达性35% + 反馈25%
-        if (has_feedback) {
+        if (category_has_feedback) {
           category_score = (facility_density_score * 0.40) + (accessibility_score * 0.35) + (feedback_score * 0.25);
         } else {
           category_score = (facility_density_score * 0.55) + (accessibility_score * 0.45);
@@ -577,8 +595,10 @@ async function performEvaluation(task_id, center_location_id, longitude, latitud
         console.log(`类别 ${category_code} 得分详情:`);
         console.log(`   - 设施数量: ${facilities.length}/10 (密度得分: ${facility_density_score.toFixed(1)})`);
         console.log(`   - 最近设施: ${Math.round(nearest_time/60)}分钟[${mode}], 平均距离: ${Math.round(avg_distance)}m (可达性得分: ${accessibility_score.toFixed(1)})`);
-        if (has_feedback) {
+        if (category_has_feedback) {
           console.log(`   - 反馈得分: ${feedback_score.toFixed(1)}`);
+        } else {
+          console.log(`   - 无设施反馈，不计入反馈得分`);
         }
         console.log(`   - 综合得分: ${category_score.toFixed(1)}`);
       } else {
@@ -809,6 +829,37 @@ const getEvaluationResult = async (req, res) => {
       distance: d.distance
     })));
 
+    // 获取所有设施的反馈信息
+    const facilityIds = [...new Set(details.map(d => d.facility_id))];
+    const facilityFeedbacks = await getFacilityFeedback(facilityIds);
+    
+    // 按设施ID分组反馈
+    const facilityFeedbackMap = new Map();
+    for (const fb of facilityFeedbacks) {
+      if (!facilityFeedbackMap.has(fb.facility_id)) {
+        facilityFeedbackMap.set(fb.facility_id, []);
+      }
+      facilityFeedbackMap.get(fb.facility_id).push({
+        score: fb.score,
+        content: fb.content,
+        submitted_at: fb.submitted_at
+      });
+    }
+    
+    // 为每个设施详情添加反馈信息
+    for (const detail of details) {
+      const feedbacks = facilityFeedbackMap.get(detail.facility_id) || [];
+      detail.feedbacks = feedbacks;
+      detail.feedback_count = feedbacks.length;
+      if (feedbacks.length > 0) {
+        detail.avg_score = feedbacks.reduce((sum, fb) => sum + fb.score, 0) / feedbacks.length;
+      } else {
+        detail.avg_score = null;
+      }
+    }
+    
+    console.log(`📋 设施反馈统计: 共${facilityFeedbacks.length}条反馈, 涉及${facilityFeedbackMap.size}个设施`);
+
     // 按类别统计
     const categoryStats = [];
     const categoryMap = new Map();
@@ -823,12 +874,21 @@ const getEvaluationResult = async (req, res) => {
           total_distance: 0,
           min_distance: Infinity,
           avg_travel_time: 0,
-          transport_modes: new Set()
+          transport_modes: new Set(),
+          feedback_count: 0,
+          total_feedback_score: 0
         });
       }
       
       const cat = categoryMap.get(key);
-      cat.facilities.add(detail.facility_id);
+      if (!cat.facilities.has(detail.facility_id)) {
+        cat.facilities.add(detail.facility_id);
+        // 统计该设施的反馈
+        if (detail.feedback_count > 0) {
+          cat.feedback_count += detail.feedback_count;
+          cat.total_feedback_score += detail.avg_score * detail.feedback_count;
+        }
+      }
       cat.total_distance += detail.distance;
       cat.min_distance = Math.min(cat.min_distance, detail.distance);
       cat.transport_modes.add(detail.transport_mode);
@@ -836,14 +896,17 @@ const getEvaluationResult = async (req, res) => {
 
     for (const [key, cat] of categoryMap) {
       const facilityCount = cat.facilities.size;
-      categoryStats.push({
+      const stats = {
         category_code: key,
         category_name: cat.category_name,
         facility_count: facilityCount,
         avg_distance: facilityCount > 0 ? Math.round(cat.total_distance / facilityCount) : 0,
         min_distance: cat.min_distance === Infinity ? 0 : Math.round(cat.min_distance),
-        transport_modes: Array.from(cat.transport_modes)
-      });
+        transport_modes: Array.from(cat.transport_modes),
+        feedback_count: cat.feedback_count,
+        avg_feedback_score: cat.feedback_count > 0 ? (cat.total_feedback_score / cat.feedback_count).toFixed(1) : null
+      };
+      categoryStats.push(stats);
     }
 
     // 按交通方式统计
@@ -895,7 +958,9 @@ const getEvaluationResult = async (req, res) => {
         total_facilities: new Set(details.map(d => d.facility_id)).size,
         total_categories: categories.length,
         total_transport_modes: modes.length,
-        avg_distance: details.length > 0 ? Math.round(details.reduce((sum, d) => sum + d.distance, 0) / details.length) : 0
+        avg_distance: details.length > 0 ? Math.round(details.reduce((sum, d) => sum + d.distance, 0) / details.length) : 0,
+        total_feedbacks: facilityFeedbacks.length,
+        facilities_with_feedback: facilityFeedbackMap.size
       }
     };
 

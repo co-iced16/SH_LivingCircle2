@@ -165,83 +165,157 @@ const createEvaluationTask = async (req, res) => {
     const finalDistrictCode = district_code || extractDistrictCode(formatted_address);
 
     // 验证输入
-    if (!formatted_address || !longitude || !latitude || !radius) {
+    if (!formatted_address || typeof formatted_address !== 'string' || formatted_address.trim().length < 5) {
       return res.status(400).json({
         success: false,
-        message: '缺少必要的位置信息'
+        message: '地址至少需要5个字符',
+        error_code: 'INVALID_ADDRESS'
       });
     }
 
-    if (!target_categories || target_categories.length === 0) {
+    if (typeof longitude !== 'number' || longitude < -180 || longitude > 180) {
       return res.status(400).json({
         success: false,
-        message: '请至少选择一个设施类别'
+        message: '经度必须在-180到180之间',
+        error_code: 'INVALID_LONGITUDE'
       });
     }
 
-    if (!transport_modes || transport_modes.length === 0) {
+    if (typeof latitude !== 'number' || latitude < -90 || latitude > 90) {
       return res.status(400).json({
         success: false,
-        message: '请至少选择一种交通方式'
+        message: '纬度必须在-90到90之间',
+        error_code: 'INVALID_LATITUDE'
       });
     }
 
-    // 检查或创建位置记录
-    let locationId;
-    const [existingLocation] = await pool.execute(
-      'SELECT location_id FROM locations WHERE longitude = ? AND latitude = ?',
-      [longitude, latitude]
-    );
+    if (typeof radius !== 'number' || radius < 100 || radius > 5000) {
+      return res.status(400).json({
+        success: false,
+        message: '评估半径必须在100到5000米之间',
+        error_code: 'INVALID_RADIUS'
+      });
+    }
 
-    if (existingLocation.length > 0) {
-      locationId = existingLocation[0].location_id;
-    } else {
-      const [locationResult] = await pool.execute(
-        'INSERT INTO locations (formatted_address, longitude, latitude, district_code) VALUES (?, ?, ?, ?)',
-        [formatted_address, longitude, latitude, finalDistrictCode]
+    if (!Array.isArray(target_categories) || target_categories.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: '请至少选择一个设施类别',
+        error_code: 'INVALID_CATEGORIES'
+      });
+    }
+
+    // 验证分类代码格式
+    for (const code of target_categories) {
+      if (typeof code !== 'string' || code.length !== 6) {
+        return res.status(400).json({
+          success: false,
+          message: `无效的设施分类代码: ${code}`,
+          error_code: 'INVALID_CATEGORY_CODE'
+        });
+      }
+    }
+
+    if (!Array.isArray(transport_modes) || transport_modes.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: '请至少选择一种交通方式',
+        error_code: 'INVALID_TRANSPORT_MODES'
+      });
+    }
+
+    // 验证交通方式
+    const validModes = ['walk', 'bus', 'car', 'ride'];
+    for (const mode of transport_modes) {
+      if (!validModes.includes(mode)) {
+        return res.status(400).json({
+          success: false,
+          message: `无效的交通方式: ${mode}`,
+          error_code: 'INVALID_TRANSPORT_MODE'
+        });
+      }
+    }
+
+    // 使用事务确保数据一致性
+    const connection = await pool.getConnection();
+    await connection.beginTransaction();
+
+    try {
+      // 检查或创建位置记录（使用更精确的匹配）
+      let locationId;
+      const [existingLocation] = await connection.execute(
+        'SELECT location_id FROM locations WHERE ABS(longitude - ?) < 0.000001 AND ABS(latitude - ?) < 0.000001 LIMIT 1',
+        [longitude, latitude]
       );
-      locationId = locationResult.insertId;
+
+      if (existingLocation.length > 0) {
+        locationId = existingLocation[0].location_id;
+      } else {
+        const [locationResult] = await connection.execute(
+          'INSERT INTO locations (formatted_address, longitude, latitude, district_code) VALUES (?, ?, ?, ?)',
+          [formatted_address.trim(), longitude, latitude, finalDistrictCode]
+        );
+        locationId = locationResult.insertId;
+      }
+
+      // 创建评估任务
+      const [taskResult] = await connection.execute(`
+        INSERT INTO evaluation_tasks (user_id, center_location_id, radius)
+        VALUES (?, ?, ?)
+      `, [req.user.user_id, locationId, radius]);
+
+      const task_id = taskResult.insertId;
+
+      // 插入关注的设施类别
+      for (const category_code of target_categories) {
+        await connection.execute(`
+          INSERT INTO evaluation_target_categories (task_id, category_code)
+          VALUES (?, ?)
+        `, [task_id, category_code]);
+      }
+
+      // 插入关注的交通方式
+      for (const transport_mode of transport_modes) {
+        await connection.execute(`
+          INSERT INTO evaluation_target_modes (task_id, transport_mode)
+          VALUES (?, ?)
+        `, [task_id, transport_mode]);
+      }
+
+      await connection.commit();
+
+      // 执行评估计算（异步执行，不阻塞响应）
+      performEvaluation(task_id, locationId, longitude, latitude, radius, target_categories, transport_modes)
+        .catch(error => console.error('评估计算错误:', error));
+
+      res.status(201).json({
+        success: true,
+        message: '评估任务创建成功，正在计算中...',
+        data: { task_id }
+      });
+    } catch (transactionError) {
+      await connection.rollback();
+      throw transactionError;
+    } finally {
+      connection.release();
     }
-
-    // 创建评估任务
-    const [taskResult] = await pool.execute(`
-      INSERT INTO evaluation_tasks (user_id, center_location_id, radius)
-      VALUES (?, ?, ?)
-    `, [req.user.user_id, locationId, radius]);
-
-    const task_id = taskResult.insertId;
-
-    // 插入关注的设施类别
-    for (const category_code of target_categories) {
-      await pool.execute(`
-        INSERT INTO evaluation_target_categories (task_id, category_code)
-        VALUES (?, ?)
-      `, [task_id, category_code]);
-    }
-
-    // 插入关注的交通方式
-    for (const transport_mode of transport_modes) {
-      await pool.execute(`
-        INSERT INTO evaluation_target_modes (task_id, transport_mode)
-        VALUES (?, ?)
-      `, [task_id, transport_mode]);
-    }
-
-    // 执行评估计算（异步执行，不阻塞响应）
-    performEvaluation(task_id, locationId, longitude, latitude, radius, target_categories, transport_modes)
-      .catch(error => console.error('评估计算错误:', error));
-
-    res.status(201).json({
-      success: true,
-      message: '评估任务创建成功，正在计算中...',
-      data: { task_id }
-    });
 
   } catch (error) {
     console.error('创建评估任务错误:', error);
+    
+    // 处理特定错误
+    if (error.code === 'ER_NO_REFERENCED_ROW_2') {
+      return res.status(400).json({
+        success: false,
+        message: '数据关联错误，请检查输入数据',
+        error_code: 'FOREIGN_KEY_CONSTRAINT'
+      });
+    }
+    
     res.status(500).json({
       success: false,
-      message: '创建评估任务失败'
+      message: '创建评估任务失败',
+      error_code: 'INTERNAL_ERROR'
     });
   }
 };
@@ -486,6 +560,28 @@ async function performEvaluation(task_id, center_location_id, longitude, latitud
               }
             }
 
+            // 确保travel_time不为0（如果为0，使用估算值）
+            if (travel_time === 0 && distance > 0) {
+              console.log(`   ⚠️ 检测到travel_time为0，使用估算值替代`);
+              switch (transport_mode) {
+                case 'walk':
+                  travel_time = Math.max(1, Math.round(distance / 80));
+                  break;
+                case 'bus':
+                  travel_time = Math.max(1, Math.round(distance / 250));
+                  break;
+                case 'car':
+                  travel_time = Math.max(1, Math.round(distance / 400));
+                  break;
+                case 'ride':
+                  travel_time = Math.max(1, Math.round(distance / 300));
+                  break;
+                default:
+                  travel_time = Math.max(1, Math.round(distance / 80));
+              }
+              console.log(`   ✅ 已修正为: ${travel_time}min`);
+            }
+
             // 记录评估结果详情
             const [insertResult] = await pool.execute(`
               INSERT INTO evaluation_result_details 
@@ -680,11 +776,15 @@ async function performEvaluation(task_id, center_location_id, longitude, latitud
 const getEvaluationTasks = async (req, res) => {
   try {
     const { page = 1, limit = 10 } = req.query;
-    const pageNum = parseInt(page);
-    const limitNum = parseInt(limit);
+    
+    // 验证和规范化分页参数
+    const pageNum = Math.max(1, parseInt(page) || 1);
+    const limitNum = Math.max(1, Math.min(100, parseInt(limit) || 10)); // 限制最大100
     const offset = (pageNum - 1) * limitNum;
 
-    const [tasks] = await pool.query(`
+    // MySQL的LIMIT和OFFSET不支持参数占位符，需要安全地拼接
+    // 但我们已经验证了limitNum和offset是安全的整数
+    const [tasks] = await pool.execute(`
       SELECT 
         et.task_id,
         l.formatted_address as center_address,
@@ -939,6 +1039,11 @@ const getEvaluationResult = async (req, res) => {
     }
 
     // 组装完整的评估结果
+    // 如果 total_score 为 null，表示评估还未完成，返回 null 而不是 0
+    const totalScore = task.total_score !== null && task.total_score !== undefined 
+      ? Math.round(parseFloat(task.total_score)) 
+      : null;
+    
     const result = {
       task_info: {
         task_id: task.task_id,
@@ -947,7 +1052,7 @@ const getEvaluationResult = async (req, res) => {
         latitude: task.latitude,
         radius: task.radius,
         created_at: task.created_at,
-        total_score: Math.round(parseFloat(task.total_score || 0))
+        total_score: totalScore
       },
       target_categories: categories,
       transport_modes: modes.map(m => m.transport_mode),
@@ -1073,22 +1178,33 @@ const deleteEvaluationTask = async (req, res) => {
   try {
     const { id } = req.params;
 
+    // 验证ID参数
+    const taskId = parseInt(id);
+    if (isNaN(taskId) || taskId <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: '无效的任务ID',
+        error_code: 'INVALID_TASK_ID'
+      });
+    }
+
     // 检查任务是否存在且属于当前用户
     const [tasks] = await pool.execute(`
       SELECT task_id FROM evaluation_tasks WHERE task_id = ? AND user_id = ?
-    `, [id, req.user.user_id]);
+    `, [taskId, req.user.user_id]);
 
     if (tasks.length === 0) {
       return res.status(404).json({
         success: false,
-        message: '评估任务不存在'
+        message: '评估任务不存在或无权删除',
+        error_code: 'TASK_NOT_FOUND'
       });
     }
 
     // 删除评估任务（级联删除会自动删除相关记录）
     await pool.execute(`
       DELETE FROM evaluation_tasks WHERE task_id = ?
-    `, [id]);
+    `, [taskId]);
 
     res.json({
       success: true,
@@ -1097,9 +1213,20 @@ const deleteEvaluationTask = async (req, res) => {
 
   } catch (error) {
     console.error('删除评估任务错误:', error);
+    
+    // 处理外键约束错误
+    if (error.code === 'ER_ROW_IS_REFERENCED_2') {
+      return res.status(400).json({
+        success: false,
+        message: '无法删除：该任务存在关联数据',
+        error_code: 'FOREIGN_KEY_CONSTRAINT'
+      });
+    }
+    
     res.status(500).json({
       success: false,
-      message: '删除评估任务失败'
+      message: '删除评估任务失败',
+      error_code: 'INTERNAL_ERROR'
     });
   }
 };

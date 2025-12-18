@@ -19,15 +19,6 @@
           </template>
         </el-alert>
       </div>
-      
-      <div v-else class="user-info">
-        <el-alert
-          :title="`欢迎, ${store.state.auth.user?.username || '用户'}！`"
-          type="success"
-          :closable="false"
-          show-icon
-        />
-      </div>
     </div>
 
     <div class="card-container">
@@ -70,11 +61,11 @@
                 <div class="location-details">
                   <div class="location-row">
                     <span class="label">经度:</span>
-                    <span class="value">{{ feedbackForm.longitude.toFixed(6) }}</span>
+                    <span class="value">{{ feedbackForm.longitude != null ? feedbackForm.longitude.toFixed(6) : '-' }}</span>
                   </div>
                   <div class="location-row">
                     <span class="label">纬度:</span>
-                    <span class="value">{{ feedbackForm.latitude.toFixed(6) }}</span>
+                    <span class="value">{{ feedbackForm.latitude != null ? feedbackForm.latitude.toFixed(6) : '-' }}</span>
                   </div>
                   <div class="location-row" v-if="feedbackForm.formatted_address">
                     <span class="label">详细地址:</span>
@@ -160,7 +151,7 @@
           </el-form-item>
           
           <!-- 搜索选择的位置信息显示区域 -->
-          <div v-if="selectedLocation" class="location-info">
+          <div v-if="selectedLocation && feedbackForm.longitude != null && feedbackForm.latitude != null" class="location-info">
             <el-card shadow="never" class="location-card">
               <template #header>
                 <div class="location-header">
@@ -172,11 +163,11 @@
               <div class="location-details">
                 <div class="location-row">
                   <span class="label">经度:</span>
-                  <span class="value">{{ feedbackForm.longitude.toFixed(6) }}</span>
-                </div>
-                <div class="location-row">
-                  <span class="label">纬度:</span>
-                  <span class="value">{{ feedbackForm.latitude.toFixed(6) }}</span>
+                  <span class="value">{{ feedbackForm.longitude != null ? feedbackForm.longitude.toFixed(6) : '-' }}</span>
+                  </div>
+                  <div class="location-row">
+                    <span class="label">纬度:</span>
+                  <span class="value">{{ feedbackForm.latitude != null ? feedbackForm.latitude.toFixed(6) : '-' }}</span>
                 </div>
                 <div class="location-row" v-if="feedbackForm.formatted_address">
                   <span class="label">详细地址:</span>
@@ -768,9 +759,19 @@ export default {
     
     // 重置表单
     const resetForm = () => {
-      feedbackFormRef.value?.resetFields()
-      clearLocation()
-      showMap.value = false
+      try {
+        // 先清除位置，避免在重置过程中触发渲染错误
+        clearLocation()
+        // 延迟重置表单字段，确保位置信息已清除
+        nextTick(() => {
+          feedbackFormRef.value?.resetFields()
+        })
+        showMap.value = false
+      } catch (error) {
+        console.warn('重置表单时出错:', error)
+        // 即使出错也要确保位置被清除
+        clearLocation()
+      }
     }
     
     onMounted(async () => {

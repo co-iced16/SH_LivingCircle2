@@ -851,26 +851,76 @@ export default {
           }
 
           // 检查任务是否已经完成计算
-          const totalScore = parseFloat(result.task_info?.total_score || 0)
+          // 更准确的判断：检查是否有评估详情数据，以及total_score是否已设置（不为null）
+          const totalScore = result.task_info?.total_score
           const facilityCount = result.summary?.total_facilities || 0
+          const hasDetails = result.facility_details && result.facility_details.length > 0
+          const hasCategoryStats = result.category_stats && result.category_stats.length > 0
+          const targetCategoriesCount = result.target_categories?.length || 0
+          const categoryStatsCount = result.category_stats?.length || 0
           
-          console.log(`检查完成状态: total_score=${totalScore}, facility_count=${facilityCount}`)
+          // total_score 为 null 或 undefined 表示还未计算完成
+          const scoreIsSet = totalScore !== null && totalScore !== undefined
           
-          if (totalScore > 0 && facilityCount > 0) {
-            console.log(`✅ 评估任务 ${taskId} 计算完成！得分: ${totalScore}, 设施数: ${facilityCount}`)
-            return {
-              success: true,
-              data: result
-            }
-          } else if (totalScore === 0 && facilityCount > 0) {
-            // 可能是得分为0的正常情况
-            console.log(`✅ 评估任务 ${taskId} 计算完成（得分为0）！设施数: ${facilityCount}`)
+          // 检查所有类别是否都已处理完成
+          // 如果 target_categories 有数据，则 category_stats 的数量应该等于 target_categories 的数量
+          const allCategoriesProcessed = targetCategoriesCount === 0 || categoryStatsCount >= targetCategoriesCount
+          
+          console.log(`检查完成状态: total_score=${totalScore}, facility_count=${facilityCount}, hasDetails=${hasDetails}, hasCategoryStats=${hasCategoryStats}, scoreIsSet=${scoreIsSet}, targetCategories=${targetCategoriesCount}, categoryStats=${categoryStatsCount}, allCategoriesProcessed=${allCategoriesProcessed}`)
+          
+          // 判断完成的条件（必须同时满足）：
+          // 1. total_score 已设置（不为null/undefined）且大于0 - 这是最关键的判断
+          //    注意：total_score=0 可能是计算过程中的临时值，只有当它>0时才认为完成
+          //    但如果 total_score=0 且所有类别都已处理且有数据，也可能是真的得分为0
+          // 2. 有评估详情数据（facility_details）或类别统计数据（category_stats）
+          // 3. 有设施数据（facilityCount > 0 或 hasDetails）
+          // 4. 所有目标类别都已处理完成（categoryStatsCount >= targetCategoriesCount）
+          // 5. 如果 total_score=0，需要额外验证：所有类别都已处理且有足够的数据，且等待时间足够长
+          const hasEnoughData = (hasDetails || hasCategoryStats) && (facilityCount > 0 || hasDetails)
+          
+          // 最严格的判断：只有当 total_score > 0 时才认为完成
+          // 如果 total_score = 0，需要确保：
+          // - 所有类别都已处理
+          // - 有足够的数据
+          // - 至少等待了15秒（8次检查），确保不是计算过程中的临时值
+          // - 并且有足够的设施详情数据（至少10条），说明计算已经进行了较长时间
+          const isScoreValid = totalScore !== null && totalScore !== undefined
+          const isScorePositive = totalScore !== null && totalScore !== undefined && totalScore > 0
+          
+          // 对于 total_score=0 的情况，需要非常严格的验证：
+          // - 所有类别都已处理
+          // - 有足够的数据
+          // - 至少等待了15秒（8次检查），确保不是计算过程中的临时值
+          // - 有足够的设施详情数据（至少10条），说明计算已经进行了较长时间
+          const hasEnoughDetails = (result.facility_details?.length || 0) >= 10
+          const isZeroScoreComplete = totalScore === 0 && 
+            allCategoriesProcessed && 
+            hasEnoughData && 
+            categoryStatsCount > 0 &&
+            retryCount >= 8 && // 至少等待16秒
+            hasEnoughDetails // 至少有10条详情数据
+          
+          const isCompleted = isScoreValid && (isScorePositive || isZeroScoreComplete) && hasEnoughData && allCategoriesProcessed
+          
+          if (isCompleted) {
+            console.log(`✅ 评估任务 ${taskId} 计算完成！得分: ${totalScore}, 设施数: ${facilityCount}, 类别数: ${categoryStatsCount}/${targetCategoriesCount}`)
             return {
               success: true,
               data: result
             }
           } else {
-            console.log(`⏳ 评估任务 ${taskId} 仍在计算中 (得分: ${totalScore}, 设施数: ${facilityCount})`)
+            // 如果 total_score 为 null，说明评估还在进行中
+            if (!isScoreValid) {
+              console.log(`⏳ 评估任务 ${taskId} 仍在计算中 (total_score 未设置)`)
+            } else if (!allCategoriesProcessed) {
+              console.log(`⏳ 评估任务 ${taskId} 仍在计算中 (类别处理未完成: ${categoryStatsCount}/${targetCategoriesCount})`)
+            } else if (!hasEnoughData) {
+              console.log(`⏳ 评估任务 ${taskId} 仍在计算中 (缺少评估详情数据)`)
+            } else if (totalScore === 0 && !isZeroScoreComplete) {
+              console.log(`⏳ 评估任务 ${taskId} 仍在计算中 (得分为0但数据不完整，等待最终计算)`)
+            } else {
+              console.log(`⏳ 评估任务 ${taskId} 仍在计算中 (得分: ${totalScore}, 设施数: ${facilityCount}, 详情数: ${result.facility_details?.length || 0})`)
+            }
             await new Promise(resolve => setTimeout(resolve, 2000))
           }
         } catch (error) {

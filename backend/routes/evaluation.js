@@ -16,13 +16,13 @@ router.get('/', evaluationController.getEvaluationTasks);
 // 获取评估统计数据
 router.get('/stats', evaluationController.getEvaluationStats);
 
+// 删除评估任务（必须在 GET /:id 之前，避免路由冲突）
+router.delete('/:id', evaluationController.deleteEvaluationTask);
+
 // 获取评估任务详情
 router.get('/:id', evaluationController.getEvaluationTaskDetails);
 
 // 获取评估结果详情
 router.get('/:id/result', evaluationController.getEvaluationResult);
-
-// 删除评估任务
-router.delete('/:id', evaluationController.deleteEvaluationTask);
 
 module.exports = router;

@@ -411,6 +411,11 @@ export class AmapUtils {
 
 // 工具函数
 export const formatTime = (seconds) => {
+  // 如果时间为0或无效，返回"1分钟"避免显示0秒
+  if (!seconds || seconds === 0) {
+    return '1分钟'
+  }
+  
   if (seconds < 60) {
     return `${seconds}秒`
   } else if (seconds < 3600) {

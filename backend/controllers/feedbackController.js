@@ -36,55 +36,115 @@ const submitCommunityFeedback = async (req, res) => {
   try {
     const { longitude, latitude, formatted_address, district_code, score, content, resident_type } = req.body;
 
+    // 验证坐标范围
+    if (typeof longitude !== 'number' || longitude < -180 || longitude > 180) {
+      return res.status(400).json({
+        success: false,
+        message: '经度必须在-180到180之间',
+        error_code: 'INVALID_LONGITUDE'
+      });
+    }
+
+    if (typeof latitude !== 'number' || latitude < -90 || latitude > 90) {
+      return res.status(400).json({
+        success: false,
+        message: '纬度必须在-90到90之间',
+        error_code: 'INVALID_LATITUDE'
+      });
+    }
+
+    // 验证地址
+    if (!formatted_address || typeof formatted_address !== 'string' || formatted_address.trim().length < 5) {
+      return res.status(400).json({
+        success: false,
+        message: '地址至少需要5个字符',
+        error_code: 'INVALID_ADDRESS'
+      });
+    }
+
+    // 验证评分
+    if (typeof score !== 'number' || score < 1 || score > 5 || !Number.isInteger(score)) {
+      return res.status(400).json({
+        success: false,
+        message: '评分必须是1到5之间的整数',
+        error_code: 'INVALID_SCORE'
+      });
+    }
+
     // 如果没有提供区域代码，尝试从地址提取
     const finalDistrictCode = district_code || extractDistrictCode(formatted_address);
 
-    // 首先创建或获取位置
-    let location_id;
-    
-    // 检查位置是否已存在
-    const [existingLocation] = await pool.execute(`
-      SELECT location_id FROM locations 
-      WHERE formatted_address = ? AND longitude = ? AND latitude = ?
-    `, [formatted_address, longitude, latitude]);
+    // 使用事务确保数据一致性
+    const connection = await pool.getConnection();
+    await connection.beginTransaction();
 
-    if (existingLocation.length > 0) {
-      location_id = existingLocation[0].location_id;
-    } else {
-      // 创建新位置
-      const [locationResult] = await pool.execute(`
-        INSERT INTO locations (formatted_address, longitude, latitude, district_code)
-        VALUES (?, ?, ?, ?)
-      `, [formatted_address, longitude, latitude, finalDistrictCode]);
+    try {
+      // 首先创建或获取位置
+      let location_id;
       
-      location_id = locationResult.insertId;
+      // 检查位置是否已存在（使用更精确的匹配）
+      const [existingLocation] = await connection.execute(`
+        SELECT location_id FROM locations 
+        WHERE ABS(longitude - ?) < 0.000001 AND ABS(latitude - ?) < 0.000001
+        LIMIT 1
+      `, [longitude, latitude]);
+
+      if (existingLocation.length > 0) {
+        location_id = existingLocation[0].location_id;
+      } else {
+        // 创建新位置
+        const [locationResult] = await connection.execute(`
+          INSERT INTO locations (formatted_address, longitude, latitude, district_code)
+          VALUES (?, ?, ?, ?)
+        `, [formatted_address.trim(), longitude, latitude, finalDistrictCode]);
+        
+        location_id = locationResult.insertId;
+      }
+
+      // 然后插入反馈基表
+      const [baseResult] = await connection.execute(`
+        INSERT INTO feedback_base (user_id, feedback_type, score, content)
+        VALUES (?, 'community', ?, ?)
+      `, [req.user.user_id, score, content ? content.trim().substring(0, 1000) : null]);
+
+      const feedback_id = baseResult.insertId;
+
+      // 最后插入社区反馈表
+      await connection.execute(`
+        INSERT INTO community_feedback (feedback_id, location_id, resident_type)
+        VALUES (?, ?, ?)
+      `, [feedback_id, location_id, resident_type || null]);
+
+      await connection.commit();
+
+      res.status(201).json({
+        success: true,
+        message: '社区反馈提交成功',
+        data: { feedback_id }
+      });
+    } catch (transactionError) {
+      await connection.rollback();
+      throw transactionError;
+    } finally {
+      connection.release();
     }
-
-    // 然后插入反馈基表
-    const [baseResult] = await pool.execute(`
-      INSERT INTO feedback_base (user_id, feedback_type, score, content)
-      VALUES (?, 'community', ?, ?)
-    `, [req.user.user_id, score, content || null]);
-
-    const feedback_id = baseResult.insertId;
-
-    // 最后插入社区反馈表
-    await pool.execute(`
-      INSERT INTO community_feedback (feedback_id, location_id, resident_type)
-      VALUES (?, ?, ?)
-    `, [feedback_id, location_id, resident_type || null]);
-
-    res.status(201).json({
-      success: true,
-      message: '社区反馈提交成功',
-      data: { feedback_id }
-    });
 
   } catch (error) {
     console.error('提交社区反馈错误:', error);
+    
+    // 处理特定错误
+    if (error.code === 'ER_DUP_ENTRY') {
+      return res.status(409).json({
+        success: false,
+        message: '反馈已存在',
+        error_code: 'DUPLICATE_FEEDBACK'
+      });
+    }
+    
     res.status(500).json({
       success: false,
-      message: '反馈提交失败，请稍后重试'
+      message: '反馈提交失败，请稍后重试',
+      error_code: 'INTERNAL_ERROR'
     });
   }
 };
@@ -93,7 +153,11 @@ const submitCommunityFeedback = async (req, res) => {
 const getCommunityFeedback = async (req, res) => {
   try {
     const { page = 1, limit = 10, address, user_id } = req.query;
-    const offset = (page - 1) * limit;
+    
+    // 验证和规范化分页参数
+    const pageNum = Math.max(1, parseInt(page) || 1);
+    const limitNum = Math.max(1, Math.min(100, parseInt(limit) || 10)); // 限制最大100
+    const offset = (pageNum - 1) * limitNum;
 
     let whereClause = 'WHERE fb.feedback_type = "community"';
     let params = [];
@@ -133,7 +197,7 @@ const getCommunityFeedback = async (req, res) => {
       ${whereClause}
       ORDER BY fb.submitted_at DESC
       LIMIT ? OFFSET ?
-    `, [...params, parseInt(limit), offset]);
+    `, [...params, limitNum, offset]);
 
     // 获取总数
     const [countResult] = await pool.execute(`
@@ -148,10 +212,10 @@ const getCommunityFeedback = async (req, res) => {
       data: {
         feedbacks,
         pagination: {
-          page: parseInt(page),
-          limit: parseInt(limit),
+          page: pageNum,
+          limit: limitNum,
           total: countResult[0].total,
-          pages: Math.ceil(countResult[0].total / limit)
+          pages: Math.ceil(countResult[0].total / limitNum)
         }
       }
     });
@@ -188,24 +252,24 @@ const submitFacilityFeedback = async (req, res) => {
       if (!facility_name || !category_code || !longitude || !latitude || !formatted_address) {
         return res.status(400).json({
           success: false,
-          message: '创建新设施时需要提供设施名称、分类、坐标和地址信息'
+          message: '创建新设施时需要提供设施名称、分类、坐标和地址信息',
+          error_code: 'MISSING_REQUIRED_FIELDS'
         });
       }
 
-      console.log('接收到的设施数据:', {
-        facility_name,
-        category_code,
-        longitude,
-        latitude,
-        formatted_address,
-        district_code
-      });
+      // 验证坐标范围
+      if (longitude < -180 || longitude > 180 || latitude < -90 || latitude > 90) {
+        return res.status(400).json({
+          success: false,
+          message: '坐标范围无效：经度应在-180到180之间，纬度应在-90到90之间',
+          error_code: 'INVALID_COORDINATES'
+        });
+      }
 
       // 验证并映射分类代码
       const categoryValidation = await validateAndMapCategoryCode(category_code);
       
       if (!categoryValidation.isValid) {
-        console.log(`无效的分类代码: ${category_code}`);
         return res.status(400).json({
           success: false,
           message: `无效的设施分类代码: ${category_code}。请从有效分类中选择。`,
@@ -215,67 +279,105 @@ const submitFacilityFeedback = async (req, res) => {
 
       // 使用映射后的分类代码
       const finalCategoryCode = categoryValidation.mappedCode;
-      if (finalCategoryCode !== category_code) {
-        console.log(`分类代码映射: ${category_code} -> ${finalCategoryCode}`);
-      }
 
       // 提取区域代码（如果没有提供）
       const finalDistrictCode = district_code || extractDistrictCode(formatted_address);
 
-      // 首先创建或获取位置
-      let locationId;
-      const [existingLocation] = await pool.execute(
-        'SELECT location_id FROM locations WHERE longitude = ? AND latitude = ?',
-        [longitude, latitude]
-      );
+      // 使用事务确保数据一致性
+      const connection = await pool.getConnection();
+      await connection.beginTransaction();
 
-      if (existingLocation.length > 0) {
-        locationId = existingLocation[0].location_id;
-      } else {
-        const [locationResult] = await pool.execute(
-          'INSERT INTO locations (formatted_address, longitude, latitude, district_code) VALUES (?, ?, ?, ?)',
-          [formatted_address, longitude, latitude, finalDistrictCode]
+      try {
+        // 首先创建或获取位置
+        let locationId;
+        const [existingLocation] = await connection.execute(
+          'SELECT location_id FROM locations WHERE longitude = ? AND latitude = ?',
+          [longitude, latitude]
         );
-        locationId = locationResult.insertId;
-      }
 
-      // 检查是否已存在相同设施（使用映射后的分类代码）
-      const [existingFacility] = await pool.execute(
-        'SELECT facility_id FROM facilities WHERE name = ? AND location_id = ? AND category_code = ?',
-        [facility_name, locationId, finalCategoryCode]
-      );
+        if (existingLocation.length > 0) {
+          locationId = existingLocation[0].location_id;
+        } else {
+          const [locationResult] = await connection.execute(
+            'INSERT INTO locations (formatted_address, longitude, latitude, district_code) VALUES (?, ?, ?, ?)',
+            [formatted_address, longitude, latitude, finalDistrictCode]
+          );
+          locationId = locationResult.insertId;
+        }
 
-      if (existingFacility.length > 0) {
-        actualFacilityId = existingFacility[0].facility_id;
-      } else {
-        // 创建新设施（使用映射后的分类代码）
-        const [facilityResult] = await pool.execute(
-          'INSERT INTO facilities (name, location_id, category_code) VALUES (?, ?, ?)',
+        // 检查是否已存在相同设施（使用映射后的分类代码）
+        const [existingFacility] = await connection.execute(
+          'SELECT facility_id FROM facilities WHERE name = ? AND location_id = ? AND category_code = ?',
           [facility_name, locationId, finalCategoryCode]
         );
-        actualFacilityId = facilityResult.insertId;
+
+        if (existingFacility.length > 0) {
+          actualFacilityId = existingFacility[0].facility_id;
+        } else {
+          // 创建新设施（使用映射后的分类代码）
+          const [facilityResult] = await connection.execute(
+            'INSERT INTO facilities (name, location_id, category_code) VALUES (?, ?, ?)',
+            [facility_name, locationId, finalCategoryCode]
+          );
+          actualFacilityId = facilityResult.insertId;
+        }
+
+        await connection.commit();
+      } catch (error) {
+        await connection.rollback();
+        throw error;
+      } finally {
+        connection.release();
       }
     }
 
-    // 首先插入反馈基表
-    const [baseResult] = await pool.execute(`
-      INSERT INTO feedback_base (user_id, feedback_type, score, content)
-      VALUES (?, 'facility', ?, ?)
-    `, [req.user.user_id, score, content || null]);
+    // 验证设施是否存在
+    if (actualFacilityId) {
+      const [facilityCheck] = await pool.execute(
+        'SELECT facility_id FROM facilities WHERE facility_id = ?',
+        [actualFacilityId]
+      );
+      if (facilityCheck.length === 0) {
+        return res.status(404).json({
+          success: false,
+          message: '指定的设施不存在',
+          error_code: 'FACILITY_NOT_FOUND'
+        });
+      }
+    }
 
-    const feedback_id = baseResult.insertId;
+    // 使用事务确保反馈数据一致性
+    const connection = await pool.getConnection();
+    await connection.beginTransaction();
 
-    // 然后插入设施反馈表
-    await pool.execute(`
-      INSERT INTO facility_feedback (feedback_id, facility_id)
-      VALUES (?, ?)
-    `, [feedback_id, actualFacilityId]);
+    try {
+      // 首先插入反馈基表
+      const [baseResult] = await connection.execute(`
+        INSERT INTO feedback_base (user_id, feedback_type, score, content)
+        VALUES (?, 'facility', ?, ?)
+      `, [req.user.user_id, score, content || null]);
 
-    res.status(201).json({
-      success: true,
-      message: '设施反馈提交成功',
-      data: { feedback_id, facility_id: actualFacilityId }
-    });
+      const feedback_id = baseResult.insertId;
+
+      // 然后插入设施反馈表
+      await connection.execute(`
+        INSERT INTO facility_feedback (feedback_id, facility_id)
+        VALUES (?, ?)
+      `, [feedback_id, actualFacilityId]);
+
+      await connection.commit();
+
+      res.status(201).json({
+        success: true,
+        message: '设施反馈提交成功',
+        data: { feedback_id, facility_id: actualFacilityId }
+      });
+    } catch (transactionError) {
+      await connection.rollback();
+      throw transactionError;
+    } finally {
+      connection.release();
+    }
 
   } catch (error) {
     console.error('提交设施反馈错误:', error);
@@ -285,8 +387,15 @@ const submitFacilityFeedback = async (req, res) => {
       return res.status(400).json({
         success: false,
         message: '提交失败：使用了无效的设施分类代码',
-        error_code: 'INVALID_CATEGORY_CODE',
-        debug_info: error.message
+        error_code: 'INVALID_CATEGORY_CODE'
+      });
+    }
+    
+    if (error.code === 'ER_DUP_ENTRY') {
+      return res.status(409).json({
+        success: false,
+        message: '反馈已存在',
+        error_code: 'DUPLICATE_FEEDBACK'
       });
     }
     

@@ -62,69 +62,57 @@ const getFacilities = async (req, res) => {
       keyword
     } = req.query;
 
-    const offset = (parseInt(page) - 1) * parseInt(limit);
-    console.log(`分页参数: page=${page}, limit=${limit}, offset=${offset}`);
+    // 验证和规范化分页参数
+    const pageNum = Math.max(1, parseInt(page) || 1);
+    const limitNum = Math.max(1, Math.min(100, parseInt(limit) || 20)); // 限制最大100
+    const offset = (pageNum - 1) * limitNum;
     
     let whereClause = 'WHERE 1=1';
     let params = [];
 
-    // 按分类筛选
+    // 按分类筛选 - 验证category_code格式
     if (category_code) {
-      whereClause += ' AND category_code = ?';
-      params.push(category_code);
+      if (typeof category_code === 'string' && category_code.length === 6) {
+        whereClause += ' AND category_code = ?';
+        params.push(category_code);
+      }
     }
 
-    // 按关键词筛选
-    if (keyword) {
+    // 按关键词筛选 - 限制长度防止DoS
+    if (keyword && typeof keyword === 'string' && keyword.length <= 100) {
       whereClause += ' AND name LIKE ?';
       params.push(`%${keyword}%`);
     }
 
-    console.log(`查询条件: ${whereClause}, 参数:`, params);
-
-    // 超级简化查询，使用字符串拼接避免参数绑定问题
-    const sql = `
+    // 使用参数化查询，安全处理LIMIT和OFFSET
+    const [facilities] = await pool.execute(`
       SELECT 
         facility_id,
         name,
         category_code,
         location_id
       FROM facilities
-      ${whereClause.replace(/\?/g, (match, offset) => {
-        const paramIndex = (whereClause.slice(0, offset).match(/\?/g) || []).length;
-        return typeof params[paramIndex] === 'string' ? `'${params[paramIndex]}'` : params[paramIndex];
-      })}
+      ${whereClause}
       ORDER BY facility_id
-      LIMIT ${parseInt(limit)} OFFSET ${parseInt(offset)}
-    `;
-    
-    console.log(`执行SQL: ${sql}`);
-    console.log(`参数: [${[...params, parseInt(limit), offset].join(', ')}]`);
-    const [facilities] = await pool.execute(sql, [...params, parseInt(limit), parseInt(offset)]);
-    console.log(`查询到 ${facilities.length} 条记录`);
+      LIMIT ? OFFSET ?
+    `, [...params, limitNum, offset]);
 
-    // 获取总数
-    const countSql = `
+    // 获取总数 - 使用参数化查询
+    const [countResult] = await pool.execute(`
       SELECT COUNT(*) as total
       FROM facilities
-      ${whereClause.replace(/\?/g, (match, offset) => {
-        const paramIndex = (whereClause.slice(0, offset).match(/\?/g) || []).length;
-        return typeof params[paramIndex] === 'string' ? `'${params[paramIndex]}'` : params[paramIndex];
-      })}
-    `;
-    
-    const [countResult] = await pool.query(countSql);
-    console.log(`总记录数: ${countResult[0].total}`);
+      ${whereClause}
+    `, params);
 
     res.json({
       success: true,
       data: {
         facilities,
         pagination: {
-          page: parseInt(page),
-          limit: parseInt(limit),
+          page: pageNum,
+          limit: limitNum,
           total: countResult[0].total,
-          pages: Math.ceil(countResult[0].total / parseInt(limit))
+          pages: Math.ceil(countResult[0].total / limitNum)
         }
       }
     });
@@ -187,9 +175,28 @@ const createFacility = async (req, res) => {
 
   } catch (error) {
     console.error('创建设施错误:', error);
+    
+    // 处理特定错误
+    if (error.code === 'ER_NO_REFERENCED_ROW_2') {
+      return res.status(400).json({
+        success: false,
+        message: '无效的设施分类代码',
+        error_code: 'INVALID_CATEGORY_CODE'
+      });
+    }
+    
+    if (error.code === 'ER_DUP_ENTRY') {
+      return res.status(409).json({
+        success: false,
+        message: '设施已存在',
+        error_code: 'DUPLICATE_ENTRY'
+      });
+    }
+    
     res.status(500).json({
       success: false,
-      message: '设施创建失败，请稍后重试'
+      message: '设施创建失败，请稍后重试',
+      error_code: 'INTERNAL_ERROR'
     });
   }
 };
@@ -576,8 +583,9 @@ const getFacilitiesWithFeedback = async (req, res) => {
       havingClause = 'HAVING COUNT(fb.feedback_id) > 0';
     }
 
-    // 使用 query 而不是 execute 来避免参数类型问题
-    const [facilities] = await pool.query(`
+    // 使用参数化查询，安全处理LIMIT和OFFSET
+    // 注意：MySQL的LIMIT/OFFSET不支持参数占位符，但我们已经验证了limitNum和offset是安全的整数
+    const [facilities] = await pool.execute(`
       SELECT
         f.facility_id,
         f.name,

@@ -210,10 +210,11 @@ export default {
           }
         })
 
-        console.log('评估历史API响应:', response.data)
+        console.log('评估历史API响应:', response)
 
-        // 处理两种可能的响应格式
-        const data = response.data.data || response.data
+        // api拦截器已经返回了response.data，所以response就是后端数据对象
+        // 后端返回格式: { success: true, data: { tasks: [...], pagination: {...} } }
+        const data = response.data || response
         if (data.tasks) {
           tasks.value = data.tasks
           pagination.total = data.pagination?.total || 0
@@ -235,9 +236,10 @@ export default {
 
       try {
         const response = await api.get(`/evaluation/${task.task_id}`)
-        if (response.data.success) {
-          taskCategories.value = response.data.data.target_categories || []
-          taskModes.value = response.data.data.transport_modes || []
+        // api拦截器已经返回了response.data，所以response就是后端数据对象
+        if (response.success) {
+          taskCategories.value = response.data?.target_categories || []
+          taskModes.value = response.data?.transport_modes || []
         }
       } catch (error) {
         console.error('获取任务详情失败:', error)
@@ -259,14 +261,20 @@ export default {
           type: 'warning'
         })
 
+        // api拦截器已经返回了response.data，所以response就是后端数据对象
         const response = await api.delete(`/evaluation/${task.task_id}`)
-        if (response.data.success) {
-          ElMessage.success('删除成功')
+        if (response.success) {
+          ElMessage.success(response.message || '删除成功')
           loadHistory()
+        } else {
+          ElMessage.error(response.message || '删除失败')
         }
       } catch (error) {
         if (error !== 'cancel') {
-          ElMessage.error('删除失败')
+          console.error('删除任务错误:', error)
+          // 错误响应也经过拦截器处理，error.response.data 是后端错误数据
+          const errorMessage = error.response?.data?.message || error.message || '删除失败'
+          ElMessage.error(errorMessage)
         }
       }
     }

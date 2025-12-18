@@ -333,7 +333,7 @@
 </template>
 
 <script>
-import { ref, reactive, computed, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useStore } from 'vuex'
 import { ElMessage } from 'element-plus'
@@ -596,15 +596,60 @@ export default {
           }
 
           // 检查任务是否已经完成计算
-          const totalScore = parseFloat(result.task_info?.total_score || 0)
+          // 更准确的判断：检查是否有评估详情数据，以及total_score是否已设置（不为null）
+          const totalScore = result.task_info?.total_score
           const facilityCount = result.summary?.total_facilities || 0
+          const hasDetails = result.facility_details && result.facility_details.length > 0
+          const hasCategoryStats = result.category_stats && result.category_stats.length > 0
+          const targetCategoriesCount = result.target_categories?.length || 0
+          const categoryStatsCount = result.category_stats?.length || 0
           
-          console.log(`🔍 检查任务完成状态: 总分=${totalScore}, 设施数=${facilityCount}`)
+          // total_score 为 null 或 undefined 表示还未计算完成
+          const scoreIsSet = totalScore !== null && totalScore !== undefined
           
-          // 如果分数为0且没有设施详情，说明还在计算中
-          if (totalScore === 0 && facilityCount === 0 && retryCount < maxRetries - 1) {
+          // 检查所有类别是否都已处理完成
+          const allCategoriesProcessed = targetCategoriesCount === 0 || categoryStatsCount >= targetCategoriesCount
+          
+          console.log(`🔍 检查任务完成状态: 总分=${totalScore}, 设施数=${facilityCount}, hasDetails=${hasDetails}, hasCategoryStats=${hasCategoryStats}, scoreIsSet=${scoreIsSet}, targetCategories=${targetCategoriesCount}, categoryStats=${categoryStatsCount}, allCategoriesProcessed=${allCategoriesProcessed}`)
+          
+          // 判断完成的条件（必须同时满足）：
+          // 1. total_score 已设置（不为null/undefined）且大于0
+          //    如果 total_score=0，需要确保所有类别都已处理且有数据，且等待了足够的时间
+          // 2. 有评估详情数据（facility_details）或类别统计数据（category_stats）
+          // 3. 有设施数据（facilityCount > 0 或 hasDetails）
+          // 4. 所有目标类别都已处理完成
+          const hasEnoughData = (hasDetails || hasCategoryStats) && (facilityCount > 0 || hasDetails)
+          const isScorePositive = totalScore !== null && totalScore !== undefined && totalScore > 0
+          
+          // 对于 total_score=0 的情况，需要非常严格的验证：
+          // - 所有类别都已处理
+          // - 有足够的数据
+          // - 至少等待了15秒（8次检查），确保不是计算过程中的临时值
+          // - 有足够的设施详情数据（至少10条），说明计算已经进行了较长时间
+          const hasEnoughDetails = (result.facility_details?.length || 0) >= 10
+          const isZeroScoreComplete = totalScore === 0 && 
+            allCategoriesProcessed && 
+            hasEnoughData && 
+            categoryStatsCount > 0 &&
+            retryCount >= 8 && // 至少等待16秒
+            hasEnoughDetails // 至少有10条详情数据
+          
+          const isCompleted = scoreIsSet && (isScorePositive || isZeroScoreComplete) && hasEnoughData && allCategoriesProcessed
+          
+          if (!isCompleted && retryCount < maxRetries - 1) {
+            // 如果 total_score 为 null，说明评估还在进行中
+            if (!scoreIsSet) {
+              console.log(`⏳ 任务还在计算中，等待2秒后重试 (${retryCount + 1}/${maxRetries}) - total_score 未设置`)
+            } else if (!allCategoriesProcessed) {
+              console.log(`⏳ 任务还在计算中，等待2秒后重试 (${retryCount + 1}/${maxRetries}) - 类别处理未完成: ${categoryStatsCount}/${targetCategoriesCount}`)
+            } else if (!hasEnoughData) {
+              console.log(`⏳ 任务还在计算中，等待2秒后重试 (${retryCount + 1}/${maxRetries}) - 缺少评估详情数据`)
+            } else if (totalScore === 0 && !isZeroScoreComplete) {
+              console.log(`⏳ 任务还在计算中，等待2秒后重试 (${retryCount + 1}/${maxRetries}) - 得分为0但等待时间不足`)
+            } else {
+              console.log(`⏳ 任务还在计算中，等待2秒后重试 (${retryCount + 1}/${maxRetries}) - 得分: ${totalScore}, 设施数: ${facilityCount}`)
+            }
             retryCount++
-            console.log(`⏳ 任务还在计算中，等待2秒后重试 (${retryCount}/${maxRetries})`)
             await new Promise(resolve => setTimeout(resolve, 2000))
             continue
           }
@@ -645,9 +690,31 @@ export default {
             }
             
             // 添加交通方式时间数据（后端存储的是分钟）
+            // 如果travel_time为0，使用估算值
+            let travelTime = detail.travel_time || 0
+            if (travelTime === 0 && detail.distance > 0) {
+              // 根据距离和交通方式估算时间（分钟）
+              switch (detail.transport_mode) {
+                case 'walk':
+                  travelTime = Math.max(1, Math.round(detail.distance / 80))
+                  break
+                case 'bus':
+                  travelTime = Math.max(1, Math.round(detail.distance / 250))
+                  break
+                case 'car':
+                  travelTime = Math.max(1, Math.round(detail.distance / 400))
+                  break
+                case 'ride':
+                  travelTime = Math.max(1, Math.round(detail.distance / 300))
+                  break
+                default:
+                  travelTime = Math.max(1, Math.round(detail.distance / 80))
+              }
+            }
+            
             facilityMap.get(key).transport_times.push({
               mode: detail.transport_mode,
-              time: (detail.travel_time || 0) * 60 // 转换为秒
+              time: travelTime * 60 // 转换为秒
             })
           })
           
@@ -886,7 +953,10 @@ export default {
     }
     
     onMounted(() => {
-      loadEvaluationResult()
+      // 使用 nextTick 确保 DOM 完全渲染后再加载数据，避免 ResizeObserver 警告
+      nextTick(() => {
+        loadEvaluationResult()
+      })
     })
     
     return {

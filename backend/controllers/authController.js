@@ -7,16 +7,34 @@ const register = async (req, res) => {
   try {
     const { username, password, email, phone } = req.body;
 
+    // 输入验证
+    if (!username || typeof username !== 'string' || username.trim().length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: '用户名不能为空',
+        error_code: 'INVALID_USERNAME'
+      });
+    }
+
+    if (!password || typeof password !== 'string' || password.length < 6) {
+      return res.status(400).json({
+        success: false,
+        message: '密码至少需要6个字符',
+        error_code: 'INVALID_PASSWORD'
+      });
+    }
+
     // 检查用户是否已存在
     const [existingUsers] = await pool.execute(
-      'SELECT user_id FROM users WHERE username = ? OR email = ?',
-      [username, email || '']
+      'SELECT user_id FROM users WHERE username = ? OR (email IS NOT NULL AND email = ?)',
+      [username.trim(), email ? email.trim() : null]
     );
 
     if (existingUsers.length > 0) {
       return res.status(409).json({
         success: false,
-        message: '用户名或邮箱已存在'
+        message: '用户名或邮箱已存在',
+        error_code: 'USER_EXISTS'
       });
     }
 
@@ -26,7 +44,7 @@ const register = async (req, res) => {
     // 插入新用户
     const [result] = await pool.execute(
       'INSERT INTO users (username, password_hash, email) VALUES (?, ?, ?)',
-      [username, passwordHash, email || null]
+      [username.trim(), passwordHash, email ? email.trim() : null]
     );
 
     res.status(201).json({
@@ -34,15 +52,26 @@ const register = async (req, res) => {
       message: '注册成功',
       data: {
         id: result.insertId,
-        username: username
+        username: username.trim()
       }
     });
 
   } catch (error) {
     console.error('注册错误:', error);
+    
+    // 处理数据库错误
+    if (error.code === 'ER_DUP_ENTRY') {
+      return res.status(409).json({
+        success: false,
+        message: '用户名或邮箱已存在',
+        error_code: 'DUPLICATE_ENTRY'
+      });
+    }
+    
     res.status(500).json({
       success: false,
-      message: '注册失败，请稍后重试'
+      message: '注册失败，请稍后重试',
+      error_code: 'INTERNAL_ERROR'
     });
   }
 };
@@ -52,16 +81,35 @@ const login = async (req, res) => {
   try {
     const { username, password } = req.body;
 
+    // 输入验证
+    if (!username || typeof username !== 'string' || username.trim().length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: '用户名不能为空',
+        error_code: 'INVALID_USERNAME'
+      });
+    }
+
+    if (!password || typeof password !== 'string' || password.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: '密码不能为空',
+        error_code: 'INVALID_PASSWORD'
+      });
+    }
+
     // 查找用户
     const [users] = await pool.execute(
       'SELECT user_id, username, password_hash, email, role FROM users WHERE username = ?',
-      [username]
+      [username.trim()]
     );
 
     if (users.length === 0) {
+      // 统一错误消息，防止用户名枚举攻击
       return res.status(401).json({
         success: false,
-        message: '用户名或密码错误'
+        message: '用户名或密码错误',
+        error_code: 'INVALID_CREDENTIALS'
       });
     }
 
@@ -72,7 +120,8 @@ const login = async (req, res) => {
     if (!isValidPassword) {
       return res.status(401).json({
         success: false,
-        message: '用户名或密码错误'
+        message: '用户名或密码错误',
+        error_code: 'INVALID_CREDENTIALS'
       });
     }
 
@@ -83,8 +132,8 @@ const login = async (req, res) => {
         username: user.username,
         role: user.role 
       },
-      process.env.JWT_SECRET,
-      { expiresIn: process.env.JWT_EXPIRES_IN }
+      process.env.JWT_SECRET || 'default-secret-key-change-in-production',
+      { expiresIn: process.env.JWT_EXPIRES_IN || '24h' }
     );
 
     res.json({
@@ -105,7 +154,8 @@ const login = async (req, res) => {
     console.error('登录错误:', error);
     res.status(500).json({
       success: false,
-      message: '登录失败，请稍后重试'
+      message: '登录失败，请稍后重试',
+      error_code: 'INTERNAL_ERROR'
     });
   }
 };

@@ -457,6 +457,18 @@ const getRouteInfo = async (originLng, originLat, destLng, destLat, mode = 'walk
         distance = parseInt(path.distance) || 0; // 米
       }
 
+      // 如果公交API返回成功但数据为空或时间为0，降级到估算
+      if (amapMode === 'transit' && (duration === 0 || !response.data.route?.transits?.[0])) {
+        console.log(`公交路径规划数据为空或时间为0，降级到估算`);
+        return getSimpleRouteEstimate(originLng, originLat, destLng, destLat, mode);
+      }
+
+      // 如果其他方式的时间为0，也降级到估算（可能是API数据异常）
+      if (duration === 0 && distance > 0) {
+        console.log(`路径规划API返回时间为0但距离>0，降级到估算 (${mode})`);
+        return getSimpleRouteEstimate(originLng, originLat, destLng, destLat, mode);
+      }
+
       return {
         success: true,
         duration: Math.round(duration / 60), // 转换为分钟
@@ -490,19 +502,20 @@ const getSimpleRouteEstimate = (originLng, originLat, destLng, destLat, mode) =>
   let duration; // 分钟
   switch (mode) {
     case 'walk':
-      duration = Math.round(distance / 80); // 步行速度约80m/min
+      duration = Math.max(1, Math.round(distance / 80)); // 步行速度约80m/min，最少1分钟
       break;
     case 'bus':
-      duration = Math.round(distance / 250); // 公交平均速度约250m/min
+      // 公交需要考虑等车时间，所以即使距离很近也要至少1-2分钟
+      duration = Math.max(1, Math.round(distance / 250)); // 公交平均速度约250m/min，最少1分钟
       break;
     case 'car':
-      duration = Math.round(distance / 400); // 汽车平均速度约400m/min
+      duration = Math.max(1, Math.round(distance / 400)); // 汽车平均速度约400m/min，最少1分钟
       break;
     case 'ride':
-      duration = Math.round(distance / 300); // 骑行平均速度约300m/min
+      duration = Math.max(1, Math.round(distance / 300)); // 骑行平均速度约300m/min，最少1分钟
       break;
     default:
-      duration = Math.round(distance / 80);
+      duration = Math.max(1, Math.round(distance / 80));
   }
 
   return {

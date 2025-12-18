@@ -6,11 +6,15 @@ const {
   getReports,
   getReportDetails,
   generateDeficiencyAnalysis,
-  deleteReport
+  deleteReport,
+  getEvaluationTaskDateRange
 } = require('../controllers/reportController');
 
 // 所有路由需要认证
 router.use(authenticateToken);
+
+// 获取评估任务日期范围（辅助接口）
+router.get('/task-date-range', getEvaluationTaskDateRange);
 
 // 获取报告列表
 router.get('/', getReports);

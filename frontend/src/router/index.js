@@ -80,6 +80,12 @@ const routes = [
             name: 'AdminUsers',
             component: () => import('@/views/admin/UserManagement.vue'),
             meta: { title: '用户管理' }
+          },
+          {
+            path: 'feedbacks',
+            name: 'AdminFeedbacks',
+            component: () => import('@/views/admin/FeedbackManagement.vue'),
+            meta: { title: '反馈管理' }
           }
         ]
       }

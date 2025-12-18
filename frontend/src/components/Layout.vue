@@ -88,6 +88,10 @@
                 <el-icon><UserFilled /></el-icon>
                 <span>用户管理</span>
               </el-menu-item>
+              <el-menu-item index="/admin/feedbacks">
+                <el-icon><ChatDotRound /></el-icon>
+                <span>反馈管理</span>
+              </el-menu-item>
             </el-sub-menu>
           </el-menu>
         </el-aside>

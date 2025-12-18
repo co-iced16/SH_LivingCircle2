@@ -55,7 +55,7 @@
     <!-- 统计概览 -->
     <div class="stats-overview">
       <h2 class="section-title">数据概览</h2>
-      <el-row :gutter="24">
+      <el-row :gutter="24" v-loading="loading">
         <el-col :xs="24" :sm="12" :md="6">
           <div class="stat-card">
             <div class="stat-icon" style="background: #e6f7ff; color: #1890ff;">
@@ -109,8 +109,8 @@
     <!-- 最近活动 -->
     <div class="recent-activity">
       <h2 class="section-title">最近活动</h2>
-      <div class="card-container">
-        <el-timeline>
+      <div class="card-container" v-loading="loading">
+        <el-timeline v-if="recentActivities.length > 0">
           <el-timeline-item
             v-for="activity in recentActivities"
             :key="activity.id"
@@ -122,7 +122,7 @@
           </el-timeline-item>
         </el-timeline>
         
-        <div v-if="recentActivities.length === 0" class="empty-state">
+        <div v-else class="empty-state">
           <el-icon size="48" class="icon"><Document /></el-icon>
           <p>暂无活动记录</p>
         </div>
@@ -134,6 +134,8 @@
 <script>
 import { ref, computed, onMounted } from 'vue'
 import { useStore } from 'vuex'
+import { ElMessage } from 'element-plus'
+import api from '@/utils/api'
 
 export default {
   name: 'Dashboard',
@@ -141,6 +143,7 @@ export default {
     const store = useStore()
     
     const isAdmin = computed(() => store.getters['auth/isAdmin'])
+    const loading = ref(false)
     
     const stats = ref({
       facilitiesCount: 0,
@@ -149,46 +152,54 @@ export default {
       usersCount: 0
     })
     
-    const recentActivities = ref([
-      {
-        id: 1,
-        title: '新用户注册',
-        description: '用户 "张三" 注册了账户',
-        timestamp: '2023-12-08 14:30',
-        color: '#52c41a'
-      },
-      {
-        id: 2,
-        title: '社区评价提交',
-        description: '用户对 "静安区某小区" 提交了评价',
-        timestamp: '2023-12-08 13:45',
-        color: '#1890ff'
-      },
-      {
-        id: 3,
-        title: '便利度评估完成',
-        description: '完成了 "徐汇区田林街道" 的便利度评估',
-        timestamp: '2023-12-08 12:15',
-        color: '#fa8c16'
-      }
-    ])
+    const recentActivities = ref([])
     
-    const loadDashboardData = async () => {
+    // 加载统计数据
+    const loadDashboardStats = async () => {
       try {
-        // 这里应该调用API获取统计数据
-        // const response = await api.get('/dashboard/stats')
-        // stats.value = response.data
-        
-        // 模拟数据
-        stats.value = {
-          facilitiesCount: 1256,
-          feedbacksCount: 489,
-          evaluationsCount: 156,
-          usersCount: 89
+        loading.value = true
+        const res = await api.get('/dashboard/stats')
+        console.log('📊 首页统计数据响应:', res)
+        if (res.success && res.data) {
+          stats.value = {
+            facilitiesCount: Number(res.data.facilitiesCount) || 0,
+            feedbacksCount: Number(res.data.feedbacksCount) || 0,
+            evaluationsCount: Number(res.data.evaluationsCount) || 0,
+            usersCount: Number(res.data.usersCount) || 0
+          }
+          console.log('📊 设置后的统计数据:', stats.value)
+        } else {
+          console.warn('⚠️ 统计数据响应格式异常:', res)
         }
       } catch (error) {
-        console.error('加载仪表板数据失败:', error)
+        console.error('加载统计数据失败:', error)
+        ElMessage.error('加载统计数据失败')
+      } finally {
+        loading.value = false
       }
+    }
+    
+    // 加载最近活动
+    const loadRecentActivities = async () => {
+      try {
+        const res = await api.get('/dashboard/activities', {
+          params: { limit: 10 }
+        })
+        if (res.success) {
+          recentActivities.value = res.data || []
+        }
+      } catch (error) {
+        console.error('加载最近活动失败:', error)
+        // 不显示错误消息，因为这不是关键功能
+      }
+    }
+    
+    // 加载所有数据
+    const loadDashboardData = async () => {
+      await Promise.all([
+        loadDashboardStats(),
+        loadRecentActivities()
+      ])
     }
     
     onMounted(() => {
@@ -198,7 +209,8 @@ export default {
     return {
       isAdmin,
       stats,
-      recentActivities
+      recentActivities,
+      loading
     }
   }
 }

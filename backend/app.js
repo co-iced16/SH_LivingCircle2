@@ -14,6 +14,7 @@ const evaluationRoutes = require('./routes/evaluation');
 const facilityRoutes = require('./routes/facilities');
 const mapRoutes = require('./routes/map');
 const reportRoutes = require('./routes/report');
+const dashboardRoutes = require('./routes/dashboard');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -74,6 +75,7 @@ app.use('/api/evaluation', evaluationRoutes);
 app.use('/api/facilities', facilityRoutes);
 app.use('/api/map', mapRoutes);
 app.use('/api/reports', reportRoutes);
+app.use('/api/dashboard', dashboardRoutes);
 
 // 404处理
 app.use('*', (req, res) => {

@@ -75,14 +75,34 @@
     </el-card>
 
     <!-- 报告详情对话框 -->
-    <el-dialog v-model="detailVisible" title="报告详情" width="700px">
+    <el-dialog v-model="detailVisible" title="报告详情" width="900px">
       <div v-if="currentReport">
-        <h3>{{ currentReport.title }}</h3>
-        <p>分析时段: {{ currentReport.start_date }} ~ {{ currentReport.end_date }}</p>
+        <el-descriptions :column="2" border>
+          <el-descriptions-item label="报告标题">{{ currentReport.title }}</el-descriptions-item>
+          <el-descriptions-item label="创建者">{{ currentReport.admin_name }}</el-descriptions-item>
+          <el-descriptions-item label="分析时段" :span="2">
+            {{ currentReport.start_date }} 至 {{ currentReport.end_date }}
+          </el-descriptions-item>
+          <el-descriptions-item label="涉及区域" :span="2" v-if="locationSummary">
+            {{ locationSummary }}
+          </el-descriptions-item>
+        </el-descriptions>
         
-        <h4>短板分析结果</h4>
-        <el-table :data="deficiencies" v-if="deficiencies.length > 0">
-          <el-table-column prop="category_name" label="设施类别" />
+        <el-divider />
+        
+        <h4 style="margin: 16px 0 12px 0;">短板分析结果</h4>
+        <el-alert
+          v-if="deficiencies.length > 0"
+          type="info"
+          :closable="false"
+          style="margin-bottom: 16px"
+        >
+          <template #title>
+            <span>本分析基于报告时段内的评估任务数据生成，共发现 {{ deficiencies.length }} 个需要改进的设施类别</span>
+          </template>
+        </el-alert>
+        <el-table :data="deficiencies" v-if="deficiencies.length > 0" stripe>
+          <el-table-column prop="category_name" label="设施类别" width="200" />
           <el-table-column prop="problem_type" label="问题类型" width="120">
             <template #default="{ row }">
               <el-tag :type="getProblemTagType(row.problem_type)">
@@ -90,9 +110,13 @@
               </el-tag>
             </template>
           </el-table-column>
-          <el-table-column prop="suggestion" label="建议" />
+          <el-table-column prop="suggestion" label="详细分析建议" min-width="500">
+            <template #default="{ row }">
+              <div style="white-space: pre-wrap; line-height: 1.8; padding: 8px 0; color: #606266;">{{ row.suggestion }}</div>
+            </template>
+          </el-table-column>
         </el-table>
-        <el-empty v-else description="暂无分析数据，请点击'生成分析'" />
+        <el-empty v-else description="暂无分析数据，请点击'生成分析'按钮生成分析报告" />
       </div>
     </el-dialog>
   </div>
@@ -115,7 +139,8 @@ export default {
       },
       detailVisible: false,
       currentReport: null,
-      deficiencies: []
+      deficiencies: [],
+      locationSummary: ''
     }
   },
   mounted() {
@@ -167,7 +192,8 @@ export default {
         const res = await api.get(`/reports/${row.report_id}`)
         if (res.success) {
           this.currentReport = res.data.report
-          this.deficiencies = res.data.deficiencies
+          this.deficiencies = res.data.deficiencies || []
+          this.locationSummary = res.data.location_summary || '多个评估区域'
           this.detailVisible = true
         }
       } catch (error) {
@@ -178,11 +204,23 @@ export default {
       try {
         const res = await api.post(`/reports/${row.report_id}/analyze`)
         if (res.success) {
-          this.$message.success(res.data.message)
+          const msg = res.data.task_count 
+            ? `${res.data.message}（基于${res.data.task_count}个评估任务，时段：${res.data.date_range}）`
+            : res.data.message
+          this.$message.success(msg)
           this.viewReport(row)
         }
       } catch (error) {
-        this.$message.error('生成分析失败')
+        const errorMsg = error.response?.data?.message || error.message || '生成分析失败'
+        if (errorMsg.includes('没有找到评估任务数据')) {
+          this.$message({
+            message: errorMsg + '。提示：请确保在创建报告时选择的日期范围内有评估任务记录。',
+            type: 'warning',
+            duration: 6000
+          })
+        } else {
+          this.$message.error(errorMsg)
+        }
       }
     },
     async deleteReport(row) {

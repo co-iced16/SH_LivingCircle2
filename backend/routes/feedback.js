@@ -18,6 +18,9 @@ router.get('/facility', feedbackController.getFacilityFeedback);
 // 反馈统计
 router.get('/stats', feedbackController.getFeedbackStats);
 
+// 获取所有反馈（管理员专用）
+router.get('/all', feedbackController.getAllFeedbacks);
+
 // 删除反馈
 router.delete('/:id', feedbackController.deleteFeedback);
 

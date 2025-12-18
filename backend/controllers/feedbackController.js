@@ -425,6 +425,134 @@ const deleteFeedback = async (req, res) => {
   }
 };
 
+// 获取所有反馈（管理员专用，包含社区反馈和设施反馈）
+const getAllFeedbacks = async (req, res) => {
+  try {
+    // 验证管理员权限
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({
+        success: false,
+        message: '只有管理员可以查看所有反馈'
+      });
+    }
+
+    const { page = 1, limit = 10, feedback_type, keyword } = req.query;
+    const pageNum = Math.max(1, parseInt(page) || 1);
+    const limitNum = Math.max(1, Math.min(100, parseInt(limit) || 10));
+    const offset = (pageNum - 1) * limitNum;
+
+    let whereClause = 'WHERE 1=1';
+    let params = [];
+
+    // 按反馈类型筛选
+    if (feedback_type && (feedback_type === 'community' || feedback_type === 'facility')) {
+      whereClause += ' AND fb.feedback_type = ?';
+      params.push(feedback_type);
+    }
+
+    // 按关键词搜索（用户名、内容、地址）
+    if (keyword) {
+      whereClause += ` AND (
+        u.username LIKE ? OR 
+        fb.content LIKE ? OR
+        COALESCE(l_community.formatted_address, '') LIKE ? OR
+        COALESCE(l_facility.formatted_address, '') LIKE ? OR
+        COALESCE(f.name, '') LIKE ?
+      )`;
+      const keywordPattern = `%${keyword}%`;
+      params.push(keywordPattern, keywordPattern, keywordPattern, keywordPattern, keywordPattern);
+    }
+
+    // 获取所有反馈（社区反馈和设施反馈合并）
+    const [allFeedbacks] = await pool.execute(`
+      SELECT 
+        fb.feedback_id,
+        fb.user_id,
+        fb.feedback_type,
+        fb.score,
+        fb.submitted_at,
+        fb.content,
+        u.username,
+        -- 社区反馈字段
+        cf.location_id as community_location_id,
+        l_community.formatted_address as community_address,
+        l_community.longitude as community_longitude,
+        l_community.latitude as community_latitude,
+        cf.resident_type,
+        -- 设施反馈字段
+        ff.facility_id,
+        f.name as facility_name,
+        l_facility.formatted_address as facility_address
+      FROM feedback_base fb
+      JOIN users u ON fb.user_id = u.user_id
+      LEFT JOIN community_feedback cf ON fb.feedback_id = cf.feedback_id AND fb.feedback_type = 'community'
+      LEFT JOIN locations l_community ON cf.location_id = l_community.location_id
+      LEFT JOIN facility_feedback ff ON fb.feedback_id = ff.feedback_id AND fb.feedback_type = 'facility'
+      LEFT JOIN facilities f ON ff.facility_id = f.facility_id
+      LEFT JOIN locations l_facility ON f.location_id = l_facility.location_id
+      ${whereClause}
+      ORDER BY fb.submitted_at DESC
+      LIMIT ${limitNum} OFFSET ${offset}
+    `, params);
+
+    // 获取总数
+    const [countResult] = await pool.execute(`
+      SELECT COUNT(*) as total
+      FROM feedback_base fb
+      JOIN users u ON fb.user_id = u.user_id
+      LEFT JOIN community_feedback cf ON fb.feedback_id = cf.feedback_id AND fb.feedback_type = 'community'
+      LEFT JOIN locations l_community ON cf.location_id = l_community.location_id
+      LEFT JOIN facility_feedback ff ON fb.feedback_id = ff.feedback_id AND fb.feedback_type = 'facility'
+      LEFT JOIN facilities f ON ff.facility_id = f.facility_id
+      LEFT JOIN locations l_facility ON f.location_id = l_facility.location_id
+      ${whereClause}
+    `, params);
+
+    // 格式化反馈数据
+    const formattedFeedbacks = allFeedbacks.map(fb => ({
+      feedback_id: fb.feedback_id,
+      user_id: fb.user_id,
+      username: fb.username,
+      feedback_type: fb.feedback_type,
+      score: fb.score,
+      submitted_at: fb.submitted_at,
+      content: fb.content,
+      // 根据类型设置地址和相关信息
+      address: fb.feedback_type === 'community' 
+        ? fb.community_address 
+        : fb.facility_address,
+      target_name: fb.feedback_type === 'community'
+        ? null
+        : fb.facility_name,
+      // 社区反馈的经纬度
+      community_longitude: fb.community_longitude,
+      community_latitude: fb.community_latitude,
+      resident_type: fb.resident_type,
+      facility_id: fb.facility_id
+    }));
+
+    res.json({
+      success: true,
+      data: {
+        feedbacks: formattedFeedbacks,
+        pagination: {
+          page: pageNum,
+          limit: limitNum,
+          total: countResult[0].total,
+          pages: Math.ceil(countResult[0].total / limitNum)
+        }
+      }
+    });
+
+  } catch (error) {
+    console.error('获取所有反馈错误:', error);
+    res.status(500).json({
+      success: false,
+      message: '获取反馈列表失败'
+    });
+  }
+};
+
 // 获取反馈统计
 const getFeedbackStats = async (req, res) => {
   try {
@@ -470,5 +598,6 @@ module.exports = {
   submitFacilityFeedback,
   getFacilityFeedback,
   deleteFeedback,
-  getFeedbackStats
+  getFeedbackStats,
+  getAllFeedbacks
 };
